@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "prisma:studio"],
       "port": 5555
+    },
+    {
+      "name": "MinecraftFront (dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "D:\\projects\\MinecraftFront", "run", "dev", "--", "-p", "3001"],
+      "port": 3001
     }
   ]
 }
