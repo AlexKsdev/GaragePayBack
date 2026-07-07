@@ -37,6 +37,7 @@ Concretely: if a security review genuinely needs the full file shown, show the f
 8. **Security basics are not optional** — see `docs/security.md` before touching auth, input handling, or anything that crosses a trust boundary. Don't wait to be asked.
 9. **Wrap multi-table mutations in `prisma.$transaction()`.** Any write that touches 2+ tables atomically must be transactional — no partial writes on failure.
 10. **Never run a destructive migration unprompted.** `prisma migrate dev` for local iteration is fine. Anything resembling `migrate deploy`, a manual `DROP`/`ALTER` that loses data, or applying a migration to a shared/prod database requires: show the generated SQL first, then wait for explicit confirmation.
+11. **Create a Jira task before starting substantive work.** Before beginning a new feature, bug fix, or multi-file change, use the `jira-create-task` skill to create the ticket first (summary = what's being built, description = scope/acceptance criteria), then reference its key (e.g. `KAN-12`) in the commit message. Skip this for trivial one-line fixes, questions, or exploratory work that isn't itself a deliverable.
 </rules>
 
 <anti_scope_creep>
