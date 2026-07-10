@@ -24,6 +24,19 @@ model User {
   passwordHash String
   name         String
   role         Role     @default(USER)
+
+  // Player profile / game stats (surfaced on the account dashboard)
+  rank            String  @default("Rookie")
+  avatar          String?
+  xp              Int     @default(0) // total lifetime XP — level & progress are derived from this
+  coins           Int     @default(0)
+  gems            Int     @default(0)
+  playtimeMinutes Int     @default(0)
+  kills           Int     @default(0)
+  deaths          Int     @default(0)
+  blocksPlaced    Int     @default(0)
+  streak          Int     @default(0)
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

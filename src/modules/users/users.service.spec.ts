@@ -1,6 +1,7 @@
 ﻿import { Test, TestingModule } from '@nestjs/testing';
 import { UsersService } from './users.service';
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -24,6 +25,7 @@ const baseUser = {
   email: 'user@test.com',
   name: 'Test',
   role: Role.USER,
+  xp: 0,
   createdAt: new Date(),
 };
 
@@ -92,6 +94,57 @@ describe('UsersService', () => {
         Role.ADMIN,
       );
       expect(result.name).toBe('Updated');
+    });
+  });
+
+  describe('grantXp()', () => {
+    it('increments xp and awards 200 coins + 2 gems per level gained', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ xp: 0 }); // level 1
+      mockPrisma.client.user.update.mockResolvedValue({ ...baseUser, xp: 100 });
+
+      const result = await service.grantXp('ctest1', 100); // -> level 2
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            xp: { increment: 100 },
+            coins: { increment: 200 },
+            gems: { increment: 2 },
+          },
+        }),
+      );
+      expect(result.level).toBe(2);
+      expect(result.xpNext).toBe(120);
+    });
+
+    it('awards the bonus for every level crossed at once', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ xp: 0 });
+      mockPrisma.client.user.update.mockResolvedValue({ ...baseUser, xp: 220 });
+
+      await service.grantXp('ctest1', 220); // level 1 -> 3 = 2 levels
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            xp: { increment: 220 },
+            coins: { increment: 400 },
+            gems: { increment: 4 },
+          },
+        }),
+      );
+    });
+
+    it('does not touch coins/gems when no level is gained', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ xp: 0 });
+      mockPrisma.client.user.update.mockResolvedValue({ ...baseUser, xp: 50 });
+
+      await service.grantXp('ctest1', 50);
+      const data = mockPrisma.client.user.update.mock.calls[0][0].data;
+      expect(data).toEqual({ xp: { increment: 50 } });
+    });
+
+    it('rejects a non-positive amount', async () => {
+      await expect(service.grantXp('ctest1', 0)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
