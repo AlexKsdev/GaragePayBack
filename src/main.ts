@@ -6,6 +6,12 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Allow the frontend origin(s) to call the API from the browser.
+  app.enableCors({
+    origin: process.env.FRONTEND_URL?.split(',') ?? ['http://localhost:3001'],
+    credentials: true,
+  });
+
   // Enable global validation pipe for DTOs
   app.useGlobalPipes(
     new ValidationPipe({
