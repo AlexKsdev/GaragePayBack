@@ -27,7 +27,7 @@ REST + WebSocket backend built with **NestJS**, **PostgreSQL**, and **Prisma ORM
 | POST | `/auth/logout` | JWT | Invalidate refresh token |
 | POST | `/auth/refresh` | — | Exchange refresh token for new access token |
 
-Public auth endpoints are throttled to **5 requests per minute**.
+`register`/`login` are throttled to **5 requests/minute**, `refresh` to **10/minute**; every other route falls back to the global default of **100 requests/minute**.
 
 ### Users — `/users`
 
@@ -118,6 +118,9 @@ npm run test:watch
 
 # coverage
 npm run test:cov
+
+# e2e
+npm run test:e2e
 ```
 
 ---
@@ -133,7 +136,7 @@ src/
 │   ├── guards/         # JwtGuard, RolesGuard
 │   ├── pipes/          # ParseCuidPipe
 │   └── types/          # JwtPayload, AuthenticatedRequest
-├── config/             # AuthConfig, DatabaseConfig, OpenAiConfig
+├── config/             # AuthConfig, DatabaseConfig, AwsConfig, OpenAiConfig
 ├── database/           # PrismaService, PrismaModule
 └── modules/
     ├── auth/
@@ -153,6 +156,21 @@ All errors return a consistent JSON shape:
   "error": "NotFoundException"
 }
 ```
+
+---
+
+## Documentation
+
+Deeper conventions and checklists live in `docs/` (read on demand, not loaded by default):
+
+| File | Covers |
+|---|---|
+| `docs/patterns.md` | Guard, DTO, pagination, error-envelope, service↔controller patterns |
+| `docs/testing-conventions.md` | Test structure, mocks, fixtures |
+| `docs/checklist.md` | Step-by-step checklist for a new feature |
+| `docs/security.md` | Auth/input/trust-boundary rules |
+| `docs/commands.md` | Exact npm/prisma/test commands |
+| `docs/pitfalls.md` | Common gotchas |
 
 ---
 

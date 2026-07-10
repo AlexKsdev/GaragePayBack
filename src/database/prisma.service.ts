@@ -5,13 +5,25 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 
 @Injectable()
 export class PrismaService implements OnModuleInit, OnModuleDestroy {
   private logger = new Logger('PrismaService');
-  private prismaClient = new PrismaClient({
-    log: ['error', 'warn'],
-  });
+  private prismaClient: PrismaClient;
+
+  constructor() {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is not set');
+    }
+    // Prisma 7's default "client" engine requires a driver adapter.
+    const adapter = new PrismaPg({ connectionString });
+    this.prismaClient = new PrismaClient({
+      adapter,
+      log: ['error', 'warn'],
+    });
+  }
 
   async onModuleInit() {
     try {
