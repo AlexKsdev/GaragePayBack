@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Patch,
+  Post,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -16,6 +17,7 @@ import { JwtGuard } from '../../common/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
+import { GrantXpDto } from './dto/grant-xp.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { UsersService } from './users.service';
@@ -30,6 +32,21 @@ export class UsersController {
   @Roles(Role.ADMIN)
   findAll(): Promise<UserResponseDto[]> {
     return this.usersService.findAll();
+  }
+
+  @Get('me')
+  findMe(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+  ): Promise<UserResponseDto> {
+    return this.usersService.findById(user.id);
+  }
+
+  @Post('me/xp')
+  grantXp(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: GrantXpDto,
+  ): Promise<UserResponseDto> {
+    return this.usersService.grantXp(user.id, dto.amount);
   }
 
   @Get(':id')

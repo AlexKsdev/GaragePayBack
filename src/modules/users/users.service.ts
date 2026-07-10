@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -8,18 +9,43 @@ import { Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
+import { levelInfo, levelUpReward } from './level.util';
 
 const USER_SELECT = {
   id: true,
   email: true,
   name: true,
   role: true,
+  rank: true,
+  avatar: true,
+  xp: true,
+  coins: true,
+  gems: true,
+  playtimeMinutes: true,
+  kills: true,
+  deaths: true,
+  blocksPlaced: true,
+  streak: true,
   createdAt: true,
 } as const;
+
+// Row as stored: `xp` is total lifetime XP; level/xpNext are derived, not stored.
+type UserRow = Omit<UserResponseDto, 'level' | 'xpNext'>;
 
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /** Attach derived level/progress (from total xp) to a stored user row. */
+  private present(user: UserRow): UserResponseDto {
+    const info = levelInfo(user.xp);
+    return {
+      ...user,
+      level: info.level,
+      xp: info.xpIntoLevel,
+      xpNext: info.xpForNextLevel,
+    };
+  }
 
   async findById(id: string): Promise<UserResponseDto> {
     const user = await this.prisma.client.user.findUnique({
@@ -27,11 +53,45 @@ export class UsersService {
       select: USER_SELECT,
     });
     if (!user) throw new NotFoundException('User not found');
-    return user;
+    return this.present(user);
   }
 
   async findAll(): Promise<UserResponseDto[]> {
-    return this.prisma.client.user.findMany({ select: USER_SELECT });
+    const users = await this.prisma.client.user.findMany({
+      select: USER_SELECT,
+    });
+    return users.map((user) => this.present(user));
+  }
+
+  /**
+   * Award XP; level and progress re-derive on read. Every level gained also
+   * grants a coin + gem bonus (see COINS_PER_LEVEL / GEMS_PER_LEVEL).
+   */
+  async grantXp(userId: string, amount: number): Promise<UserResponseDto> {
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new BadRequestException('amount must be a positive integer');
+    }
+    const current = await this.prisma.client.user.findUnique({
+      where: { id: userId },
+      select: { xp: true },
+    });
+    if (!current) throw new NotFoundException('User not found');
+
+    const reward = levelUpReward(current.xp, current.xp + amount);
+    const user = await this.prisma.client.user.update({
+      where: { id: userId },
+      data: {
+        xp: { increment: amount },
+        ...(reward.levelsGained > 0
+          ? {
+              coins: { increment: reward.coins },
+              gems: { increment: reward.gems },
+            }
+          : {}),
+      },
+      select: USER_SELECT,
+    });
+    return this.present(user);
   }
 
   async update(
@@ -56,11 +116,12 @@ export class UsersService {
       if (taken) throw new ConflictException('Email already in use');
     }
 
-    return this.prisma.client.user.update({
+    const updated = await this.prisma.client.user.update({
       where: { id: targetId },
       data: dto,
       select: USER_SELECT,
     });
+    return this.present(updated);
   }
 
   async delete(

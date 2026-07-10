@@ -5,5 +5,17 @@ export class UserResponseDto {
   email: string;
   name: string;
   role: Role;
+  rank: string;
+  avatar: string | null;
+  level: number;
+  xp: number;
+  xpNext: number;
+  coins: number;
+  gems: number;
+  playtimeMinutes: number;
+  kills: number;
+  deaths: number;
+  blocksPlaced: number;
+  streak: number;
   createdAt: Date;
 }
