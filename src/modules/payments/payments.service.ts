@@ -85,7 +85,7 @@ export class PaymentsService {
         },
       ],
       metadata: { paymentId: payment.id },
-      success_url: `${frontendUrl}/shop?payment=success`,
+      success_url: `${frontendUrl}/checkout/success`,
       cancel_url: `${frontendUrl}/shop?payment=cancelled`,
     });
 
