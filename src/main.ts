@@ -4,7 +4,9 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: keep the unparsed body available (req.rawBody) for Stripe webhook
+  // signature verification, while JSON parsing still works for every other route.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // Allow the frontend origin(s) to call the API from the browser.
   app.enableCors({

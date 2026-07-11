@@ -93,7 +93,8 @@ model RefreshToken {
 model Payment {
   id              String        @id @default(cuid())
   userId          String
-  amount          Int
+  amount          Int // charged amount in the smallest currency unit (cents)
+  gems            Int           @default(0) // gems credited to the user when this payment succeeds
   description     String?
   status          PaymentStatus @default(PENDING)
   stripePaymentId String?
