@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient, Role } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
+import { PRODUCTS } from './products.data';
 
 const TEST_USER = {
   email: 'test@purecraft.net',
@@ -50,6 +51,15 @@ async function main() {
 
   console.log('Seeded test user:', user);
   console.log(`Login with: ${TEST_USER.email} / ${TEST_USER.password}`);
+
+  for (const product of PRODUCTS) {
+    await prisma.product.upsert({
+      where: { slug: product.slug },
+      update: product,
+      create: product,
+    });
+  }
+  console.log(`Seeded ${PRODUCTS.length} shop products`);
 
   await prisma.$disconnect();
 }

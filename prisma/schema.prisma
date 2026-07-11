@@ -18,6 +18,11 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum Currency {
+  COINS
+  GEMS
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -42,6 +47,37 @@ model User {
 
   payments     Payment[]
   refreshTokens RefreshToken[]
+  purchases    Purchase[]
+}
+
+model Product {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  category  String
+  name      String
+  emoji     String
+  rarity    String
+  currency  Currency @default(COINS)
+  price     Int
+  badge     String?
+  stats     String[]
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases Purchase[]
+}
+
+model Purchase {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  currency  Currency
+  price     Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
 }
 
 model RefreshToken {
