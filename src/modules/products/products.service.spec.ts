@@ -3,6 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Currency } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ProductsService } from './products.service';
+import { ProductSort } from './dto/query-products.dto';
 
 const mockTx = {
   user: { updateMany: jest.fn(), findUnique: jest.fn() },
@@ -15,6 +16,7 @@ const mockPrisma = {
       findMany: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+      count: jest.fn(),
     },
     // Interactive transaction: run the callback against the tx mock.
     $transaction: jest.fn((cb: (tx: typeof mockTx) => unknown) => cb(mockTx)),
@@ -48,29 +50,74 @@ describe('ProductsService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('findAll()', () => {
-    it('only returns active products, optionally filtered by category', async () => {
-      mockPrisma.client.product.findMany.mockResolvedValue([]);
-      await service.findAll({
+    it('returns a paginated envelope of active, category-filtered products', async () => {
+      mockPrisma.client.product.findMany.mockResolvedValue([coinProduct]);
+      mockPrisma.client.product.count.mockResolvedValue(7);
+      const result = await service.findAll({
         category: 'Weapons',
-        skip: 0,
-        limit: 20,
+        page: 2,
+        limit: 6,
+        skip: 6,
       });
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       const call = mockPrisma.client.product.findMany.mock.calls[0][0] as {
         where: { active: boolean; category?: string };
+        skip: number;
+        take: number;
       };
       expect(call.where.active).toBe(true);
       expect(call.where.category).toBe('Weapons');
+      expect(call.skip).toBe(6);
+      expect(call.take).toBe(6);
+      expect(result).toEqual({
+        items: [coinProduct],
+        total: 7,
+        page: 2,
+        limit: 6,
+      });
     });
 
-    it('omits the category filter when none is given', async () => {
+    it('omits the category filter and defaults order when none is given', async () => {
       mockPrisma.client.product.findMany.mockResolvedValue([]);
+      mockPrisma.client.product.count.mockResolvedValue(0);
       await service.findAll({ skip: 0, limit: 20 });
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       const call = mockPrisma.client.product.findMany.mock.calls[0][0] as {
         where: { category?: string };
+        orderBy: { createdAt?: string };
       };
       expect(call.where.category).toBeUndefined();
+      expect(call.orderBy.createdAt).toBe('asc');
+    });
+
+    it('maps the rarity sort to the matching orderBy', async () => {
+      mockPrisma.client.product.findMany.mockResolvedValue([]);
+      mockPrisma.client.product.count.mockResolvedValue(0);
+      await service.findAll({
+        sort: ProductSort.RARITY_DESC,
+        skip: 0,
+        limit: 6,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const call = mockPrisma.client.product.findMany.mock.calls[0][0] as {
+        orderBy: { rarityRank?: string };
+      };
+      expect(call.orderBy.rarityRank).toBe('desc');
+    });
+
+    it('sorts price within a currency group (coins lead, then price)', async () => {
+      mockPrisma.client.product.findMany.mockResolvedValue([]);
+      mockPrisma.client.product.count.mockResolvedValue(0);
+      await service.findAll({
+        sort: ProductSort.COINS_ASC,
+        skip: 0,
+        limit: 6,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const call = mockPrisma.client.product.findMany.mock.calls[0][0] as {
+        orderBy: { currency?: string; price?: string }[];
+      };
+      expect(call.orderBy).toEqual([{ currency: 'asc' }, { price: 'asc' }]);
     });
   });
 

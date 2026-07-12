@@ -57,6 +57,7 @@ model Product {
   name      String
   emoji     String
   rarity    String
+  rarityRank Int     @default(0) // Common=1 … Legendary=5, for rarity sorting
   currency  Currency @default(COINS)
   price     Int
   badge     String?

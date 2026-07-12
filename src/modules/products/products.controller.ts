@@ -11,6 +11,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
+import { PaginatedProductsDto } from './dto/paginated-products.dto';
 import { ProductResponseDto } from './dto/product-response.dto';
 import { PurchaseResponseDto } from './dto/purchase-response.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
@@ -21,7 +22,7 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Get()
-  findAll(@Query() query: QueryProductsDto): Promise<ProductResponseDto[]> {
+  findAll(@Query() query: QueryProductsDto): Promise<PaginatedProductsDto> {
     return this.productsService.findAll(query);
   }
 

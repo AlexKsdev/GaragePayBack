@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { PrismaClient, Role } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
-import { PRODUCTS } from './products.data';
+import { PRODUCTS, RARITY_RANK } from './products.data';
 
 const TEST_USER = {
   email: 'test@purecraft.net',
@@ -53,10 +53,11 @@ async function main() {
   console.log(`Login with: ${TEST_USER.email} / ${TEST_USER.password}`);
 
   for (const product of PRODUCTS) {
+    const data = { ...product, rarityRank: RARITY_RANK[product.rarity] ?? 0 };
     await prisma.product.upsert({
       where: { slug: product.slug },
-      update: product,
-      create: product,
+      update: data,
+      create: data,
     });
   }
   console.log(`Seeded ${PRODUCTS.length} shop products`);

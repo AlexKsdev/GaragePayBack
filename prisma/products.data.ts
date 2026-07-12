@@ -1,5 +1,14 @@
 import { Currency } from '@prisma/client';
 
+// Rarity ordering used for the shop's "sort by rarity" (higher = rarer).
+export const RARITY_RANK: Record<string, number> = {
+  Common: 1,
+  Uncommon: 2,
+  Rare: 3,
+  Epic: 4,
+  Legendary: 5,
+};
+
 export interface ProductSeed {
   slug: string;
   category: string;
