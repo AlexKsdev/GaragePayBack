@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Payment" ADD COLUMN     "gems" INTEGER NOT NULL DEFAULT 0;

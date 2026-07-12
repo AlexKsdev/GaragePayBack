@@ -18,6 +18,11 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum Currency {
+  COINS
+  GEMS
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -42,6 +47,38 @@ model User {
 
   payments     Payment[]
   refreshTokens RefreshToken[]
+  purchases    Purchase[]
+}
+
+model Product {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  category  String
+  name      String
+  emoji     String
+  rarity    String
+  rarityRank Int     @default(0) // Common=1 … Legendary=5, for rarity sorting
+  currency  Currency @default(COINS)
+  price     Int
+  badge     String?
+  stats     String[]
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases Purchase[]
+}
+
+model Purchase {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  currency  Currency
+  price     Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
 }
 
 model RefreshToken {
@@ -57,7 +94,8 @@ model RefreshToken {
 model Payment {
   id              String        @id @default(cuid())
   userId          String
-  amount          Int
+  amount          Int // charged amount in the smallest currency unit (cents)
+  gems            Int           @default(0) // gems credited to the user when this payment succeeds
   description     String?
   status          PaymentStatus @default(PENDING)
   stripePaymentId String?
