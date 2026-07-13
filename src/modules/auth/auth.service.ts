@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -7,14 +8,17 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { Role, User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { JwtPayload } from '../../common/types/jwt-payload.type';
+import { MailService } from '../mail/mail.service';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -22,6 +26,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     @Inject(AuthConfig) private readonly authConfig: AuthConfig,
+    private readonly mail: MailService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponseDto> {
@@ -116,6 +121,61 @@ export class AuthService {
     await this.prisma.client.refreshToken.deleteMany({
       where: { userId, token: refreshToken },
     });
+  }
+
+  /**
+   * Always resolves without error, whether or not the email exists — the
+   * caller must not be able to distinguish the two (avoids account enumeration).
+   */
+  async forgotPassword(email: string): Promise<void> {
+    const user = await this.prisma.client.user.findUnique({ where: { email } });
+    if (!user) return;
+
+    const rawToken = randomBytes(32).toString('hex');
+    await this.prisma.client.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.hashResetToken(rawToken),
+        expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+      },
+    });
+
+    const frontendUrl =
+      process.env.FRONTEND_URL?.split(',')[0] ?? 'http://localhost:3001';
+    await this.mail.sendPasswordReset(
+      email,
+      `${frontendUrl}/reset-password?token=${rawToken}`,
+    );
+  }
+
+  /**
+   * Consumes a reset token: sets the new password, invalidates every reset
+   * token and every refresh token for the user (forces re-login everywhere).
+   */
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const record = await this.prisma.client.passwordResetToken.findUnique({
+      where: { tokenHash: this.hashResetToken(token) },
+    });
+    if (!record || record.expiresAt < new Date()) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await this.prisma.client.user.update({
+      where: { id: record.userId },
+      data: { passwordHash },
+    });
+
+    await this.prisma.client.passwordResetToken.deleteMany({
+      where: { userId: record.userId },
+    });
+    await this.prisma.client.refreshToken.deleteMany({
+      where: { userId: record.userId },
+    });
+  }
+
+  private hashResetToken(rawToken: string): string {
+    return createHash('sha256').update(rawToken).digest('hex');
   }
 
   private signAccessToken(sub: string, email: string, role: Role): string {

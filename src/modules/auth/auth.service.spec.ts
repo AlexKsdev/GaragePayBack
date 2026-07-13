@@ -1,22 +1,33 @@
 ﻿import { Test, TestingModule } from '@nestjs/testing';
 import { AuthService } from './auth.service';
 import { JwtService } from '@nestjs/jwt';
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Role } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
+import { MailService } from '../mail/mail.service';
 
 const mockPrisma = {
   client: {
     user: {
       findUnique: jest.fn(),
+      update: jest.fn(),
       create: jest.fn(),
     },
     refreshToken: {
       create: jest.fn(),
       findUnique: jest.fn(),
       delete: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+    passwordResetToken: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
       deleteMany: jest.fn(),
     },
     $transaction: jest.fn(),
@@ -30,6 +41,10 @@ const mockJwt = {
 const mockAuthConfig = {
   jwtSecret: 'test-secret',
   jwtExpiresIn: '15m',
+};
+
+const mockMailService = {
+  sendPasswordReset: jest.fn(),
 };
 
 const baseUser = {
@@ -57,6 +72,7 @@ describe('AuthService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: JwtService, useValue: mockJwt },
         { provide: AuthConfig, useValue: mockAuthConfig },
+        { provide: MailService, useValue: mockMailService },
       ],
     }).compile();
 
@@ -187,6 +203,85 @@ describe('AuthService', () => {
       });
       const result = await service.refresh({ refreshToken: 'valid-token' });
       expect(result.accessToken).toBeDefined();
+    });
+  });
+
+  describe('forgotPassword()', () => {
+    it('creates a reset token and emails a link when the user exists', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+      mockPrisma.client.passwordResetToken.create.mockResolvedValue({});
+
+      await service.forgotPassword('test@test.com');
+
+      expect(mockPrisma.client.passwordResetToken.create).toHaveBeenCalled();
+      expect(mockMailService.sendPasswordReset).toHaveBeenCalledWith(
+        'test@test.com',
+        expect.stringContaining('/reset-password?token='),
+      );
+    });
+
+    it('does nothing (no error, no email) for an unknown email', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.forgotPassword('unknown@test.com'),
+      ).resolves.toBeUndefined();
+      expect(
+        mockPrisma.client.passwordResetToken.create,
+      ).not.toHaveBeenCalled();
+      expect(mockMailService.sendPasswordReset).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetPassword()', () => {
+    it('throws BadRequestException for an unknown token', async () => {
+      mockPrisma.client.passwordResetToken.findUnique.mockResolvedValue(null);
+      await expect(
+        service.resetPassword('bad-token', 'newpassword123'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException for an expired token', async () => {
+      mockPrisma.client.passwordResetToken.findUnique.mockResolvedValue({
+        id: 'crt1',
+        userId: baseUser.id,
+        tokenHash: 'hash',
+        expiresAt: new Date(Date.now() - 1000),
+      });
+      await expect(
+        service.resetPassword('expired-token', 'newpassword123'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('updates the password, deletes reset tokens, and invalidates refresh tokens', async () => {
+      mockPrisma.client.passwordResetToken.findUnique.mockResolvedValue({
+        id: 'crt1',
+        userId: baseUser.id,
+        tokenHash: 'hash',
+        expiresAt: new Date(Date.now() + 100_000),
+      });
+      mockPrisma.client.user.update.mockResolvedValue({ ...baseUser });
+
+      await service.resetPassword('valid-token', 'newpassword123');
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const updateCall = mockPrisma.client.user.update.mock.calls[0][0] as {
+        where: { id: string };
+        data: { passwordHash: string };
+      };
+      expect(updateCall.where.id).toBe(baseUser.id);
+      const isHashed = await bcrypt.compare(
+        'newpassword123',
+        updateCall.data.passwordHash,
+      );
+      expect(isHashed).toBe(true);
+
+      expect(
+        mockPrisma.client.passwordResetToken.deleteMany,
+      ).toHaveBeenCalledWith({ where: { userId: baseUser.id } });
+      expect(mockPrisma.client.refreshToken.deleteMany).toHaveBeenCalledWith({
+        where: { userId: baseUser.id },
+      });
     });
   });
 });
