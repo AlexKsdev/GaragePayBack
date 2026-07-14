@@ -57,7 +57,7 @@ export class UsersController {
     @Body() dto: UpdateUserDto,
     @CurrentUser() user: AuthenticatedRequest['user'],
   ): Promise<UserResponseDto> {
-    return this.usersService.update(user.id, id, dto, user.role);
+    return this.usersService.update(user.id, id, dto);
   }
 
   @Delete(':id')
@@ -66,6 +66,6 @@ export class UsersController {
     @Param('id', ParseCuidPipe) id: string,
     @CurrentUser() user: AuthenticatedRequest['user'],
   ): Promise<void> {
-    await this.usersService.delete(user.id, id, user.role);
+    await this.usersService.delete(user.id, id);
   }
 }

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PaymentStatus, Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { PaginationDto } from '../../common/dto/pagination.dto';
 import { GEM_PACKS } from '../../config/gem-packs.config';
 import { STRIPE_CLIENT } from './stripe.provider';
 
@@ -23,7 +24,7 @@ const mockPrisma = {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
-    user: { update: jest.fn() },
+    user: { update: jest.fn(), findUnique: jest.fn() },
     $transaction: jest.fn((cb: (tx: typeof mockTx) => unknown) => cb(mockTx)),
   },
 };
@@ -77,18 +78,41 @@ describe('PaymentsService', () => {
   describe('findOne()', () => {
     it('throws NotFoundException when payment does not exist', async () => {
       mockPrisma.client.payment.findUnique.mockResolvedValue(null);
-      await expect(
-        service.findOne('cuser1', 'cnonexistent', Role.USER),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.findOne('cuser1', 'cnonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('throws ForbiddenException for wrong userId', async () => {
       mockPrisma.client.payment.findUnique.mockResolvedValue({
         ...basePayment,
       });
-      await expect(
-        service.findOne('cother', 'cpayment1', Role.USER),
-      ).rejects.toThrow(ForbiddenException);
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER });
+      await expect(service.findOne('cother', 'cpayment1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+  });
+
+  describe('findAll()', () => {
+    const pagination = { skip: 0, limit: 20 } as PaginationDto;
+
+    it('scopes to the caller when their DB role is not admin', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER });
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      await service.findAll('cuser1', pagination);
+      expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: 'cuser1' } }),
+      );
+    });
+
+    it('returns all payments when the DB role is admin', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.ADMIN });
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      await service.findAll('cadmin', pagination);
+      expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: {} }),
+      );
     });
   });
 

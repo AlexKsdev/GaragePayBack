@@ -81,18 +81,17 @@ describe('UsersService', () => {
     });
 
     it('allows admin to update another user', async () => {
-      mockPrisma.client.user.findUnique.mockResolvedValueOnce({ ...baseUser });
+      mockPrisma.client.user.findUnique
+        .mockResolvedValueOnce({ ...baseUser }) // target lookup
+        .mockResolvedValueOnce({ role: Role.ADMIN }); // requester admin check (DB)
       mockPrisma.client.user.update.mockResolvedValue({
         ...baseUser,
         name: 'Updated',
       });
 
-      const result = await service.update(
-        'cadmin',
-        'ctest1',
-        { name: 'Updated' },
-        Role.ADMIN,
-      );
+      const result = await service.update('cadmin', 'ctest1', {
+        name: 'Updated',
+      });
       expect(result.name).toBe('Updated');
     });
   });
@@ -151,17 +150,15 @@ describe('UsersService', () => {
   describe('delete()', () => {
     it('throws ForbiddenException for non-owner/non-admin', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
-      await expect(
-        service.delete('cother', 'ctest1', Role.USER),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(service.delete('cother', 'ctest1')).rejects.toThrow(
+        ForbiddenException,
+      );
     });
 
     it('allows owner to delete their own account', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
       mockPrisma.client.user.delete.mockResolvedValue(undefined);
-      await expect(
-        service.delete('ctest1', 'ctest1', Role.USER),
-      ).resolves.toBeUndefined();
+      await expect(service.delete('ctest1', 'ctest1')).resolves.toBeUndefined();
     });
   });
 });

@@ -5,11 +5,11 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentStatus, Role } from '@prisma/client';
+import { PaymentStatus } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { assertOwnerOrAdmin } from '../../common/ownership.util';
+import { assertOwnerOrAdmin, isAdmin } from '../../common/ownership.util';
 import { frontendBaseUrl } from '../../config/frontend.config';
 import {
   findGemPack,
@@ -159,10 +159,9 @@ export class PaymentsService {
 
   async findAll(
     userId: string,
-    role: Role,
     pagination: PaginationDto,
   ): Promise<PaymentResponseDto[]> {
-    const where = role === Role.ADMIN ? {} : { userId };
+    const where = (await isAdmin(this.prisma, userId)) ? {} : { userId };
     return this.prisma.client.payment.findMany({
       where,
       select: PAYMENT_SELECT,
@@ -175,17 +174,16 @@ export class PaymentsService {
   async findOne(
     userId: string,
     paymentId: string,
-    role: Role,
   ): Promise<PaymentResponseDto> {
     const payment = await this.prisma.client.payment.findUnique({
       where: { id: paymentId },
       select: PAYMENT_SELECT,
     });
     if (!payment) throw new NotFoundException('Payment not found');
-    assertOwnerOrAdmin(
+    await assertOwnerOrAdmin(
+      this.prisma,
       userId,
       payment.userId,
-      role,
       'Cannot access this payment',
     );
     return payment;

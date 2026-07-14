@@ -75,7 +75,7 @@ export class PaymentsController {
     @CurrentUser() user: AuthenticatedRequest['user'],
     @Query() pagination: PaginationDto,
   ): Promise<PaymentResponseDto[]> {
-    return this.paymentsService.findAll(user.id, user.role, pagination);
+    return this.paymentsService.findAll(user.id, pagination);
   }
 
   @Get(':id')
@@ -84,7 +84,7 @@ export class PaymentsController {
     @CurrentUser() user: AuthenticatedRequest['user'],
     @Param('id', ParseCuidPipe) id: string,
   ): Promise<PaymentResponseDto> {
-    return this.paymentsService.findOne(user.id, id, user.role);
+    return this.paymentsService.findOne(user.id, id);
   }
 
   @Patch(':id/status')
