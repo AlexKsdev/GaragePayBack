@@ -49,11 +49,7 @@ export class AuthService {
           select: { id: true, email: true, name: true, role: true },
         });
         const rt = await tx.refreshToken.create({
-          data: {
-            userId: created.id,
-            token: this.generateRefreshToken(),
-            expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
-          },
+          data: this.newRefreshToken(created.id),
         });
         return { user: created, refreshTokenRecord: rt };
       },
@@ -75,11 +71,7 @@ export class AuthService {
 
   async login(user: User): Promise<AuthResponseDto> {
     const rt = await this.prisma.client.refreshToken.create({
-      data: {
-        userId: user.id,
-        token: this.generateRefreshToken(),
-        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
-      },
+      data: this.newRefreshToken(user.id),
     });
 
     return {
@@ -186,11 +178,15 @@ export class AuthService {
     });
   }
 
-  private generateRefreshToken(): string {
-    return (
-      Math.random().toString(36).slice(2) +
-      Date.now().toString(36) +
-      Math.random().toString(36).slice(2)
-    );
+  /**
+   * Build a refresh-token row: a cryptographically-random opaque token (not
+   * Math.random — this is a long-lived bearer credential) plus its expiry.
+   */
+  private newRefreshToken(userId: string) {
+    return {
+      userId,
+      token: randomBytes(48).toString('hex'),
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    };
   }
 }

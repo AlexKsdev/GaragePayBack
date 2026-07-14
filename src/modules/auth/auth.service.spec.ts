@@ -109,6 +109,27 @@ describe('AuthService', () => {
       expect(isHashed).toBe(true);
     });
 
+    it('generates a crypto-random refresh token (96 hex chars, not Math.random)', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(null);
+      mockPrisma.client.$transaction.mockImplementation(
+        async (fn: (tx: typeof mockPrisma.client) => Promise<unknown>) =>
+          fn(mockPrisma.client),
+      );
+      mockPrisma.client.user.create.mockResolvedValue({ ...baseUser });
+      mockPrisma.client.refreshToken.create.mockResolvedValue({ token: 'rt' });
+
+      await service.register({
+        email: 'a@b.com',
+        password: 'password123',
+        name: 'A',
+      });
+
+      const calls = mockPrisma.client.refreshToken.create.mock.calls;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const createCall = calls[0][0] as { data: { token: string } };
+      expect(createCall.data.token).toMatch(/^[0-9a-f]{96}$/);
+    });
+
     it('throws ConflictException when email already exists', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue(baseUser);
       await expect(
