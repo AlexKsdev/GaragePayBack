@@ -36,8 +36,8 @@ export function levelInfo(totalXp: number): LevelInfo {
 }
 
 // Rewarded once per level gained.
-export const COINS_PER_LEVEL = 200;
-export const GEMS_PER_LEVEL = 2;
+const COINS_PER_LEVEL = 200;
+const GEMS_PER_LEVEL = 2;
 
 export interface LevelUpReward {
   levelsGained: number;
