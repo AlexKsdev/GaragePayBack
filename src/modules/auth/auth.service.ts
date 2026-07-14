@@ -11,6 +11,7 @@ import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
+import { frontendBaseUrl } from '../../config/frontend.config';
 import { JwtPayload } from '../../common/types/jwt-payload.type';
 import { MailService } from '../mail/mail.service';
 import { AuthResponseDto } from './dto/auth-response.dto';
@@ -132,11 +133,9 @@ export class AuthService {
       },
     });
 
-    const frontendUrl =
-      process.env.FRONTEND_URL?.split(',')[0] ?? 'http://localhost:3001';
     await this.mail.sendPasswordReset(
       email,
-      `${frontendUrl}/reset-password?token=${rawToken}`,
+      `${frontendBaseUrl()}/reset-password?token=${rawToken}`,
     );
   }
 

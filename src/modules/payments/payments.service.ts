@@ -10,6 +10,7 @@ import { PaymentStatus, Role } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { frontendBaseUrl } from '../../config/frontend.config';
 import {
   findGemPack,
   GEM_PACKS,
@@ -69,8 +70,7 @@ export class PaymentsService {
       select: { id: true },
     });
 
-    const frontendUrl =
-      process.env.FRONTEND_URL?.split(',')[0] ?? 'http://localhost:3001';
+    const frontendUrl = frontendBaseUrl();
 
     const session = await this.stripe.checkout.sessions.create({
       mode: 'payment',
