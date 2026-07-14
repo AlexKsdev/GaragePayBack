@@ -50,3 +50,6 @@ prisma/dev.db-journal
 # Docker
 docker-compose.override.yml
 /generated/prisma
+
+# task-observer transient logs
+.claude/skill-observations/
