@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -10,6 +9,8 @@ import { PaymentStatus, Role } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { assertOwnerOrAdmin } from '../../common/ownership.util';
+import { frontendBaseUrl } from '../../config/frontend.config';
 import {
   findGemPack,
   GEM_PACKS,
@@ -69,8 +70,7 @@ export class PaymentsService {
       select: { id: true },
     });
 
-    const frontendUrl =
-      process.env.FRONTEND_URL?.split(',')[0] ?? 'http://localhost:3001';
+    const frontendUrl = frontendBaseUrl();
 
     const session = await this.stripe.checkout.sessions.create({
       mode: 'payment',
@@ -182,9 +182,12 @@ export class PaymentsService {
       select: PAYMENT_SELECT,
     });
     if (!payment) throw new NotFoundException('Payment not found');
-    if (payment.userId !== userId && role !== Role.ADMIN) {
-      throw new ForbiddenException('Cannot access this payment');
-    }
+    assertOwnerOrAdmin(
+      userId,
+      payment.userId,
+      role,
+      'Cannot access this payment',
+    );
     return payment;
   }
 

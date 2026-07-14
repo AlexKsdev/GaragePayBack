@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { frontendOrigins } from './config/frontend.config';
 
 async function bootstrap() {
   // rawBody: keep the unparsed body available (req.rawBody) for Stripe webhook
@@ -10,7 +11,7 @@ async function bootstrap() {
 
   // Allow the frontend origin(s) to call the API from the browser.
   app.enableCors({
-    origin: process.env.FRONTEND_URL?.split(',') ?? ['http://localhost:3001'],
+    origin: frontendOrigins(),
     credentials: true,
   });
 
