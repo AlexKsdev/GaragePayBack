@@ -14,11 +14,9 @@ import {
 } from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
-import { Role } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { AdminGuard } from '../../common/guards/admin.guard';
 import { JwtGuard } from '../../common/guards/jwt.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
@@ -90,8 +88,7 @@ export class PaymentsController {
   }
 
   @Patch(':id/status')
-  @UseGuards(JwtGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @UseGuards(JwtGuard, AdminGuard)
   updateStatus(
     @Param('id', ParseCuidPipe) id: string,
     @Body() dto: UpdatePaymentStatusDto,
