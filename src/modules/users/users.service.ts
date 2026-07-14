@@ -1,12 +1,12 @@
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { assertOwnerOrAdmin } from '../../common/ownership.util';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { levelInfo, levelUpReward } from './level.util';
@@ -105,9 +105,12 @@ export class UsersService {
     });
     if (!target) throw new NotFoundException('User not found');
 
-    if (requestingUserId !== targetId && requestingRole !== Role.ADMIN) {
-      throw new ForbiddenException('Cannot update another user');
-    }
+    assertOwnerOrAdmin(
+      requestingUserId,
+      targetId,
+      requestingRole ?? Role.USER,
+      'Cannot update another user',
+    );
 
     if (dto.email && dto.email !== target.email) {
       const taken = await this.prisma.client.user.findUnique({
@@ -134,9 +137,12 @@ export class UsersService {
     });
     if (!target) throw new NotFoundException('User not found');
 
-    if (requestingUserId !== targetId && requestingRole !== Role.ADMIN) {
-      throw new ForbiddenException('Cannot delete another user');
-    }
+    assertOwnerOrAdmin(
+      requestingUserId,
+      targetId,
+      requestingRole,
+      'Cannot delete another user',
+    );
 
     await this.prisma.client.user.delete({ where: { id: targetId } });
   }
