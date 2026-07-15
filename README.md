@@ -130,10 +130,10 @@ npm run test:e2e
 ```
 src/
 ├── common/
-│   ├── decorators/     # @CurrentUser, @Roles
+│   ├── decorators/     # @CurrentUser
 │   ├── dto/            # PaginationDto
 │   ├── filters/        # HttpExceptionFilter
-│   ├── guards/         # JwtGuard, RolesGuard
+│   ├── guards/         # JwtGuard, AdminGuard
 │   ├── pipes/          # ParseCuidPipe
 │   └── types/          # JwtPayload, AuthenticatedRequest
 ├── config/             # AuthConfig, DatabaseConfig, AwsConfig, OpenAiConfig
