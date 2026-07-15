@@ -15,6 +15,7 @@ import {
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipCsrf } from '../../common/decorators/skip-csrf.decorator';
 import { AdminGuard } from '../../common/guards/admin.guard';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
@@ -42,6 +43,7 @@ export class PaymentsController {
   // webhook signature, not a JWT. Needs the raw request body for that check.
   @Post('webhook')
   @HttpCode(200)
+  @SkipCsrf()
   async webhook(
     @Req() req: RawBodyRequest<Request>,
     @Headers('stripe-signature') signature: string,

@@ -14,6 +14,7 @@ import type { User } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipCsrf } from '../../common/decorators/skip-csrf.decorator';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
 import {
@@ -35,6 +36,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
+  @SkipCsrf()
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   async register(
     @Body() dto: RegisterDto,
@@ -48,6 +50,7 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
   @UseGuards(LocalGuard)
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   async login(
@@ -102,6 +105,7 @@ export class AuthController {
   // response itself can't be used to enumerate registered accounts.
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   async forgotPassword(
     @Body() dto: ForgotPasswordDto,
@@ -114,6 +118,7 @@ export class AuthController {
 
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   async resetPassword(
     @Body() dto: ResetPasswordDto,
