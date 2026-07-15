@@ -24,7 +24,9 @@ describe('AdminGuard', () => {
 
   it('allows a user whose DB role is ADMIN', async () => {
     mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.ADMIN });
-    await expect(guard.canActivate(buildContext('admin-1'))).resolves.toBe(true);
+    await expect(guard.canActivate(buildContext('admin-1'))).resolves.toBe(
+      true,
+    );
     expect(mockPrisma.client.user.findUnique).toHaveBeenCalledWith({
       where: { id: 'admin-1' },
       select: { role: true },

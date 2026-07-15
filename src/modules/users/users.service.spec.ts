@@ -65,7 +65,9 @@ describe('UsersService', () => {
 
   describe('update()', () => {
     it('throws ForbiddenException when non-owner updates', async () => {
-      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+      mockPrisma.client.user.findUnique
+        .mockResolvedValueOnce({ ...baseUser }) // target lookup
+        .mockResolvedValueOnce({ role: Role.USER }); // requester is NOT admin in the DB
       await expect(
         service.update('cother', 'ctest1', { name: 'New' }),
       ).rejects.toThrow(ForbiddenException);
@@ -149,7 +151,9 @@ describe('UsersService', () => {
 
   describe('delete()', () => {
     it('throws ForbiddenException for non-owner/non-admin', async () => {
-      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+      mockPrisma.client.user.findUnique
+        .mockResolvedValueOnce({ ...baseUser }) // target lookup
+        .mockResolvedValueOnce({ role: Role.USER }); // requester is NOT admin in the DB
       await expect(service.delete('cother', 'ctest1')).rejects.toThrow(
         ForbiddenException,
       );
