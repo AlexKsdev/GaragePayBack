@@ -112,17 +112,20 @@ export class UsersService {
     targetId: string,
     dto: UpdateUserDto,
   ): Promise<UserResponseDto> {
-    const target = await this.prisma.client.user.findUnique({
-      where: { id: targetId },
-    });
-    if (!target) throw new NotFoundException('User not found');
-
+    // Authorize before the lookup so a non-owner cannot tell a real id from a
+    // fake one by the 404-vs-403 response.
     await assertOwnerOrAdmin(
       this.prisma,
       requestingUserId,
       targetId,
       'Cannot update another user',
     );
+
+    const target = await this.prisma.client.user.findUnique({
+      where: { id: targetId },
+      select: { email: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
 
     if (dto.email && dto.email !== target.email) {
       const taken = await this.prisma.client.user.findUnique({
@@ -140,17 +143,20 @@ export class UsersService {
   }
 
   async delete(requestingUserId: string, targetId: string): Promise<void> {
-    const target = await this.prisma.client.user.findUnique({
-      where: { id: targetId },
-    });
-    if (!target) throw new NotFoundException('User not found');
-
+    // Authorize before the lookup so a non-owner cannot tell a real id from a
+    // fake one by the 404-vs-403 response.
     await assertOwnerOrAdmin(
       this.prisma,
       requestingUserId,
       targetId,
       'Cannot delete another user',
     );
+
+    const target = await this.prisma.client.user.findUnique({
+      where: { id: targetId },
+      select: { id: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
 
     await this.prisma.client.user.delete({ where: { id: targetId } });
   }
