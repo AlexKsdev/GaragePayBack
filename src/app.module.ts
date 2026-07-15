@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CsrfGuard } from './common/guards/csrf.guard';
@@ -22,6 +22,13 @@ import { ProductsModule } from './modules/products/products.module';
     ProductsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: CsrfGuard }],
+  // ThrottlerModule.forRoot alone does nothing — without this guard every
+  // @Throttle in the codebase is inert, which left login/register/forgot-password
+  // with no brute-force protection at all.
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: CsrfGuard },
+  ],
 })
 export class AppModule {}
