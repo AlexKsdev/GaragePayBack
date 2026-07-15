@@ -46,19 +46,48 @@ describe('UsersService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('findById()', () => {
-    it('throws NotFoundException when user does not exist', async () => {
+    it('throws NotFoundException when the owner does not exist', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue(null);
-      await expect(service.findById('cnonexistent')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.findById('cnonexistent', 'cnonexistent'),
+      ).rejects.toThrow(NotFoundException);
     });
 
-    it('returns user without passwordHash', async () => {
+    it('returns own user without passwordHash', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
-      const result = await service.findById('ctest1');
+      const result = await service.findById('ctest1', 'ctest1');
       expect(
         (result as unknown as Record<string, unknown>).passwordHash,
       ).toBeUndefined();
+      expect(result.email).toBe('user@test.com');
+    });
+
+    it('forbids reading another user (no email/balance leak) — KAN-51', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER }); // requester is not admin in the DB
+      await expect(service.findById('cother', 'ctest1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('does not even look up the target when the caller is not authorized', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER });
+      await expect(service.findById('cother', 'ctest1')).rejects.toThrow(
+        ForbiddenException,
+      );
+      // Only the requester's role check ran — the target row was never read,
+      // so a non-owner cannot probe which ids exist.
+      expect(mockPrisma.client.user.findUnique).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.client.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'cother' },
+        select: { role: true },
+      });
+    });
+
+    it('allows an admin to read another user', async () => {
+      mockPrisma.client.user.findUnique
+        .mockResolvedValueOnce({ role: Role.ADMIN }) // requester admin check (DB)
+        .mockResolvedValueOnce({ ...baseUser }); // target lookup
+      const result = await service.findById('cadmin', 'ctest1');
       expect(result.email).toBe('user@test.com');
     });
   });
