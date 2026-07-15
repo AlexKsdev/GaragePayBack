@@ -44,7 +44,7 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
-    const { user, refreshTokenRecord } = await this.prisma.client.$transaction(
+    const { user, rawRefreshToken } = await this.prisma.client.$transaction(
       async (tx) => {
         const created = await tx.user.create({
           data: {
@@ -55,16 +55,15 @@ export class AuthService {
           },
           select: { id: true, email: true, name: true, role: true },
         });
-        const rt = await tx.refreshToken.create({
-          data: this.newRefreshToken(created.id),
-        });
-        return { user: created, refreshTokenRecord: rt };
+        const rt = this.newRefreshToken(created.id);
+        await tx.refreshToken.create({ data: rt.data });
+        return { user: created, rawRefreshToken: rt.raw };
       },
     );
 
     return {
       accessToken: this.signAccessToken(user.id, user.email, user.role),
-      refreshToken: refreshTokenRecord.token,
+      refreshToken: rawRefreshToken,
       user,
     };
   }
@@ -77,13 +76,12 @@ export class AuthService {
   }
 
   async login(user: User): Promise<AuthTokens> {
-    const rt = await this.prisma.client.refreshToken.create({
-      data: this.newRefreshToken(user.id),
-    });
+    const rt = this.newRefreshToken(user.id);
+    await this.prisma.client.refreshToken.create({ data: rt.data });
 
     return {
       accessToken: this.signAccessToken(user.id, user.email, user.role),
-      refreshToken: rt.token,
+      refreshToken: rt.raw,
       user: {
         id: user.id,
         email: user.email,
@@ -93,19 +91,49 @@ export class AuthService {
     };
   }
 
-  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
+  /**
+   * Exchanges a refresh token for a new access token, rotating the refresh
+   * token in the process: the presented one is revoked and a replacement
+   * issued, so each token is usable exactly once.
+   *
+   * That single-use property is what makes theft detectable. If a revoked
+   * token is presented again, two parties hold it — the legitimate client and
+   * a thief — and there is no way to tell which one is calling, so every
+   * refresh token for that user is revoked and both are forced to log in again.
+   */
+  async refresh(
+    refreshToken: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     const record = await this.prisma.client.refreshToken.findUnique({
-      where: { token: refreshToken },
+      where: { tokenHash: this.hashToken(refreshToken) },
       include: { user: true },
     });
 
     if (!record) throw new UnauthorizedException('Invalid refresh token');
+
+    if (record.revokedAt) {
+      await this.revokeAllForUser(record.userId);
+      throw new UnauthorizedException('Refresh token reuse detected');
+    }
+
     if (record.expiresAt < new Date()) {
-      await this.prisma.client.refreshToken.delete({
-        where: { token: refreshToken },
+      await this.prisma.client.refreshToken.update({
+        where: { id: record.id },
+        data: { revokedAt: new Date() },
       });
       throw new UnauthorizedException('Refresh token expired');
     }
+
+    const next = this.newRefreshToken(record.userId);
+    // Atomic: never leave the old token revoked without a replacement issued,
+    // nor two live tokens for one rotation.
+    await this.prisma.client.$transaction([
+      this.prisma.client.refreshToken.update({
+        where: { id: record.id },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.client.refreshToken.create({ data: next.data }),
+    ]);
 
     return {
       accessToken: this.signAccessToken(
@@ -113,6 +141,7 @@ export class AuthService {
         record.user.email,
         record.user.role,
       ),
+      refreshToken: next.raw,
     };
   }
 
@@ -122,10 +151,24 @@ export class AuthService {
    * on a live access token: those expire in 15 minutes while the refresh token
    * lives 7 days, and a user must always be able to end their session.
    * Idempotent — an unknown or already-revoked token is a no-op.
+   *
+   * Revoked rather than deleted: a deleted row is indistinguishable from a
+   * token that never existed, so replaying a stolen token after logout would
+   * look like a plain 401. Keeping the revoked row makes that replay trip the
+   * reuse detector instead.
    */
   async logout(refreshToken: string): Promise<void> {
-    await this.prisma.client.refreshToken.deleteMany({
-      where: { token: refreshToken },
+    await this.prisma.client.refreshToken.updateMany({
+      where: { tokenHash: this.hashToken(refreshToken), revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  /** Kills every live session for a user (reuse detected, or password reset). */
+  private async revokeAllForUser(userId: string): Promise<void> {
+    await this.prisma.client.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
     });
   }
 
@@ -141,7 +184,7 @@ export class AuthService {
     await this.prisma.client.passwordResetToken.create({
       data: {
         userId: user.id,
-        tokenHash: this.hashResetToken(rawToken),
+        tokenHash: this.hashToken(rawToken),
         expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
       },
     });
@@ -158,7 +201,7 @@ export class AuthService {
    */
   async resetPassword(token: string, newPassword: string): Promise<void> {
     const record = await this.prisma.client.passwordResetToken.findUnique({
-      where: { tokenHash: this.hashResetToken(token) },
+      where: { tokenHash: this.hashToken(token) },
     });
     if (!record || record.expiresAt < new Date()) {
       throw new BadRequestException('Invalid or expired reset token');
@@ -173,12 +216,11 @@ export class AuthService {
     await this.prisma.client.passwordResetToken.deleteMany({
       where: { userId: record.userId },
     });
-    await this.prisma.client.refreshToken.deleteMany({
-      where: { userId: record.userId },
-    });
+    await this.revokeAllForUser(record.userId);
   }
 
-  private hashResetToken(rawToken: string): string {
+  /** Tokens are stored only as this hash, so a DB leak yields nothing usable. */
+  private hashToken(rawToken: string): string {
     return createHash('sha256').update(rawToken).digest('hex');
   }
 
@@ -191,14 +233,23 @@ export class AuthService {
   }
 
   /**
-   * Build a refresh-token row: a cryptographically-random opaque token (not
-   * Math.random — this is a long-lived bearer credential) plus its expiry.
+   * Mints a refresh token: a cryptographically-random opaque value (not
+   * Math.random — this is a long-lived bearer credential). Returns the raw
+   * token for the caller to hand to the client, and the row to store, which
+   * holds only its hash.
    */
-  private newRefreshToken(userId: string) {
+  private newRefreshToken(userId: string): {
+    raw: string;
+    data: { userId: string; tokenHash: string; expiresAt: Date };
+  } {
+    const raw = randomBytes(48).toString('hex');
     return {
-      userId,
-      token: randomBytes(48).toString('hex'),
-      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+      raw,
+      data: {
+        userId,
+        tokenHash: this.hashToken(raw),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+      },
     };
   }
 }
