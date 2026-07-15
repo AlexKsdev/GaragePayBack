@@ -15,6 +15,8 @@ import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { SkipCsrf } from '../../common/decorators/skip-csrf.decorator';
+import { JwtGuard } from '../../common/guards/jwt.guard';
+import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
 import {
   ACCESS_TTL_MS,
   authCookieOptions,
@@ -26,6 +28,13 @@ import { AuthService } from './auth.service';
 import { AuthResponseDto, AuthUserDto } from './dto/auth-response.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { RegisterDto } from './dto/register.dto';
+import {
+  DisableTwoFactorDto,
+  TwoFactorCodeDto,
+  TwoFactorRequiredDto,
+  TwoFactorSetupResponseDto,
+} from './dto/two-factor.dto';
+import { PENDING_2FA_TTL_MS } from '../../config/totp.config';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { LocalGuard } from './guards/local.guard';
 
@@ -54,8 +63,47 @@ export class AuthController {
   async login(
     @CurrentUser() user: User,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<AuthResponseDto> {
+  ): Promise<AuthResponseDto | TwoFactorRequiredDto> {
+    // With 2FA on, the password alone earns no session — only a short-lived
+    // pending cookie that /auth/2fa/verify can redeem. No access or refresh
+    // cookie is issued here at all.
+    if (user.totpEnabled) {
+      res.cookie(
+        COOKIE_NAMES.pending2fa,
+        this.authService.signPending2faToken(user.id),
+        authCookieOptions(PENDING_2FA_TTL_MS),
+      );
+      return { twoFactorRequired: true };
+    }
+
     const result = await this.authService.login(user);
+    this.setAuthCookies(
+      res,
+      { accessToken: result.accessToken, refreshToken: result.refreshToken },
+      result.user,
+    );
+    return { user: result.user };
+  }
+
+  @Post('2fa/verify')
+  @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async verifyTwoFactor(
+    @Body() dto: TwoFactorCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<AuthResponseDto> {
+    const pending = req.cookies?.[COOKIE_NAMES.pending2fa] as
+      | string
+      | undefined;
+    if (!pending) throw new UnauthorizedException('No two-factor session');
+
+    const result = await this.authService.verifyTwoFactorLogin(
+      pending,
+      dto.code,
+    );
+    res.clearCookie(COOKIE_NAMES.pending2fa, { path: '/' });
     this.setAuthCookies(
       res,
       { accessToken: result.accessToken, refreshToken: result.refreshToken },
@@ -108,6 +156,37 @@ export class AuthController {
       authCookieOptions(REFRESH_TTL_MS),
     );
     return { ok: true };
+  }
+
+  @Post('2fa/setup')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtGuard)
+  setupTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+  ): Promise<TwoFactorSetupResponseDto> {
+    return this.authService.setupTwoFactor(user.id);
+  }
+
+  @Post('2fa/enable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async enableTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: TwoFactorCodeDto,
+  ): Promise<void> {
+    await this.authService.enableTwoFactor(user.id, dto.code);
+  }
+
+  @Post('2fa/disable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async disableTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: DisableTwoFactorDto,
+  ): Promise<void> {
+    await this.authService.disableTwoFactor(user.id, dto.password, dto.code);
   }
 
   // Always responds the same way whether or not the email exists, so the
