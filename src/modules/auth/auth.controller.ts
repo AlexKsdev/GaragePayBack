@@ -93,11 +93,19 @@ export class AuthController {
       | string
       | undefined;
     if (!refreshToken) throw new UnauthorizedException('No refresh token');
-    const { accessToken } = await this.authService.refresh(refreshToken);
+    const tokens = await this.authService.refresh(refreshToken);
     res.cookie(
       COOKIE_NAMES.access,
-      accessToken,
+      tokens.accessToken,
       authCookieOptions(ACCESS_TTL_MS),
+    );
+    // The refresh token rotates on every use — the client must be given the
+    // replacement, or its next refresh would replay a revoked token and trip
+    // the reuse detector, logging it out.
+    res.cookie(
+      COOKIE_NAMES.refresh,
+      tokens.refreshToken,
+      authCookieOptions(REFRESH_TTL_MS),
     );
     return { ok: true };
   }

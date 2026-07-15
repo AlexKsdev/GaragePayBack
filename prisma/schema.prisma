@@ -82,14 +82,21 @@ model Purchase {
   product Product @relation(fields: [productId], references: [id])
 }
 
+// Refresh tokens are stored hashed (sha256), never in plaintext — a database
+// leak must not hand over live sessions. Tokens rotate on every use: the old row
+// is stamped `revokedAt` and a new one issued. Presenting an already-revoked
+// token means it was replayed (i.e. stolen), which revokes the user's whole set.
 model RefreshToken {
-  id        String   @id @default(cuid())
-  token     String   @unique
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
   userId    String
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model PasswordResetToken {

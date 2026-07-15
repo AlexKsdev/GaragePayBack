@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
@@ -22,8 +23,10 @@ const mockPrisma = {
     refreshToken: {
       create: jest.fn(),
       findUnique: jest.fn(),
+      update: jest.fn(),
       delete: jest.fn(),
       deleteMany: jest.fn(),
+      updateMany: jest.fn(),
     },
     passwordResetToken: {
       create: jest.fn(),
@@ -33,6 +36,17 @@ const mockPrisma = {
     $transaction: jest.fn(),
   },
 };
+
+// Set after the literal, not inside it: referencing mockPrisma within its own
+// initializer makes TypeScript infer the whole object as `any`.
+// Supports both forms the service uses — the interactive callback (register)
+// and the array form (refresh rotation). Registered once here rather than
+// per-test, since jest.clearAllMocks() clears calls but keeps implementations.
+mockPrisma.client.$transaction.mockImplementation((arg: unknown) =>
+  Array.isArray(arg)
+    ? Promise.all(arg)
+    : (arg as (tx: unknown) => unknown)(mockPrisma.client),
+);
 
 const mockJwt = {
   sign: jest.fn(),
@@ -86,10 +100,6 @@ describe('AuthService', () => {
   describe('register()', () => {
     it('hashes the password before storing', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue(null);
-      mockPrisma.client.$transaction.mockImplementation(
-        async (fn: (tx: typeof mockPrisma.client) => Promise<unknown>) =>
-          fn(mockPrisma.client),
-      );
       mockPrisma.client.user.create.mockResolvedValue({ ...baseUser });
       mockPrisma.client.refreshToken.create.mockResolvedValue({ token: 'rt' });
 
@@ -109,25 +119,32 @@ describe('AuthService', () => {
       expect(isHashed).toBe(true);
     });
 
-    it('generates a crypto-random refresh token (96 hex chars, not Math.random)', async () => {
+    it('issues a crypto-random refresh token but stores only its hash', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue(null);
-      mockPrisma.client.$transaction.mockImplementation(
-        async (fn: (tx: typeof mockPrisma.client) => Promise<unknown>) =>
-          fn(mockPrisma.client),
-      );
       mockPrisma.client.user.create.mockResolvedValue({ ...baseUser });
-      mockPrisma.client.refreshToken.create.mockResolvedValue({ token: 'rt' });
+      mockPrisma.client.refreshToken.create.mockResolvedValue({});
 
-      await service.register({
+      const result = await service.register({
         email: 'a@b.com',
         password: 'password123',
         name: 'A',
       });
 
+      // The caller gets a 48-byte random token (not Math.random).
+      expect(result.refreshToken).toMatch(/^[0-9a-f]{96}$/);
+
       const calls = mockPrisma.client.refreshToken.create.mock.calls;
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      const createCall = calls[0][0] as { data: { token: string } };
-      expect(createCall.data.token).toMatch(/^[0-9a-f]{96}$/);
+      const createCall = calls[0][0] as {
+        data: { tokenHash: string; token?: string };
+      };
+      // The row holds the sha256 of it and nothing resembling the raw value —
+      // a database leak must not hand over live sessions.
+      expect(createCall.data.tokenHash).toBe(
+        createHash('sha256').update(result.refreshToken).digest('hex'),
+      );
+      expect(createCall.data.token).toBeUndefined();
+      expect(JSON.stringify(createCall)).not.toContain(result.refreshToken);
     });
 
     it('throws ConflictException when email already exists', async () => {
@@ -143,10 +160,6 @@ describe('AuthService', () => {
 
     it('returns response without passwordHash', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue(null);
-      mockPrisma.client.$transaction.mockImplementation(
-        async (fn: (tx: typeof mockPrisma.client) => Promise<unknown>) =>
-          fn(mockPrisma.client),
-      );
       mockPrisma.client.user.create.mockResolvedValue({
         id: baseUser.id,
         email: baseUser.email,
@@ -196,6 +209,28 @@ describe('AuthService', () => {
   });
 
   describe('refresh()', () => {
+    const liveRecord = {
+      id: 'crt1',
+      userId: 'ctest123',
+      expiresAt: new Date(Date.now() + 100_000),
+      revokedAt: null,
+      user: { ...baseUser },
+    };
+
+    it('looks the token up by its hash, never by the raw value', async () => {
+      mockPrisma.client.refreshToken.findUnique.mockResolvedValue({
+        ...liveRecord,
+      });
+      await service.refresh('raw-token');
+
+      const findCalls = mockPrisma.client.refreshToken.findUnique.mock.calls;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const where = findCalls[0][0] as { where: { tokenHash: string } };
+      const expected = createHash('sha256').update('raw-token').digest('hex');
+      expect(where.where.tokenHash).toBe(expected);
+      expect(JSON.stringify(where)).not.toContain('raw-token');
+    });
+
     it('throws UnauthorizedException when token not found', async () => {
       mockPrisma.client.refreshToken.findUnique.mockResolvedValue(null);
       await expect(service.refresh('bad-token')).rejects.toThrow(
@@ -205,25 +240,57 @@ describe('AuthService', () => {
 
     it('throws UnauthorizedException when token is expired', async () => {
       mockPrisma.client.refreshToken.findUnique.mockResolvedValue({
-        token: 'old-token',
-        userId: 'ctest123',
+        ...liveRecord,
         expiresAt: new Date(Date.now() - 1000),
-        user: { ...baseUser },
       });
       await expect(service.refresh('old-token')).rejects.toThrow(
         UnauthorizedException,
       );
     });
 
-    it('returns a new accessToken for valid token', async () => {
+    it('rotates the token: revokes the presented one and issues a replacement', async () => {
       mockPrisma.client.refreshToken.findUnique.mockResolvedValue({
-        token: 'valid-token',
-        userId: 'ctest123',
-        expiresAt: new Date(Date.now() + 100_000),
-        user: { ...baseUser },
+        ...liveRecord,
       });
+
       const result = await service.refresh('valid-token');
+
       expect(result.accessToken).toBeDefined();
+      // A brand-new raw token comes back, not the one that was presented.
+      expect(result.refreshToken).toMatch(/^[0-9a-f]{96}$/);
+      expect(result.refreshToken).not.toBe('valid-token');
+      // Old row revoked and replacement created in one transaction.
+      expect(mockPrisma.client.$transaction).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.client.refreshToken.update).toHaveBeenCalledWith({
+        where: { id: 'crt1' },
+        data: { revokedAt: expect.any(Date) as Date },
+      });
+      const createCalls = mockPrisma.client.refreshToken.create.mock.calls;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const created = createCalls[0][0] as { data: { tokenHash: string } };
+      // Only the hash of the replacement is stored.
+      expect(created.data.tokenHash).toBe(
+        createHash('sha256').update(result.refreshToken).digest('hex'),
+      );
+    });
+
+    it('detects reuse: replaying a revoked token revokes every session', async () => {
+      mockPrisma.client.refreshToken.findUnique.mockResolvedValue({
+        ...liveRecord,
+        revokedAt: new Date(Date.now() - 5000),
+      });
+
+      await expect(service.refresh('stolen-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      // The whole set is burned — the legitimate client and the thief both
+      // have to log in again, because we cannot tell them apart.
+      expect(mockPrisma.client.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'ctest123', revokedAt: null },
+        data: { revokedAt: expect.any(Date) as Date },
+      });
+      // No replacement is handed out to a replayer.
+      expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
     });
   });
 
@@ -274,7 +341,7 @@ describe('AuthService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('updates the password, deletes reset tokens, and invalidates refresh tokens', async () => {
+    it('updates the password, deletes reset tokens, and revokes refresh tokens', async () => {
       mockPrisma.client.passwordResetToken.findUnique.mockResolvedValue({
         id: 'crt1',
         userId: baseUser.id,
@@ -300,8 +367,11 @@ describe('AuthService', () => {
       expect(
         mockPrisma.client.passwordResetToken.deleteMany,
       ).toHaveBeenCalledWith({ where: { userId: baseUser.id } });
-      expect(mockPrisma.client.refreshToken.deleteMany).toHaveBeenCalledWith({
-        where: { userId: baseUser.id },
+      // Refresh tokens are revoked rather than deleted, so a stolen one that
+      // is replayed afterwards still trips the reuse detector.
+      expect(mockPrisma.client.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: baseUser.id, revokedAt: null },
+        data: { revokedAt: expect.any(Date) as Date },
       });
     });
   });
