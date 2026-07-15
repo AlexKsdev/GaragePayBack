@@ -35,7 +35,7 @@ export class UsersController {
   findMe(
     @CurrentUser() user: AuthenticatedRequest['user'],
   ): Promise<UserResponseDto> {
-    return this.usersService.findById(user.id);
+    return this.usersService.findById(user.id, user.id);
   }
 
   @Post('me/xp')
@@ -47,8 +47,11 @@ export class UsersController {
   }
 
   @Get(':id')
-  findById(@Param('id', ParseCuidPipe) id: string): Promise<UserResponseDto> {
-    return this.usersService.findById(id);
+  findById(
+    @Param('id', ParseCuidPipe) id: string,
+    @CurrentUser() user: AuthenticatedRequest['user'],
+  ): Promise<UserResponseDto> {
+    return this.usersService.findById(user.id, id);
   }
 
   @Patch(':id')

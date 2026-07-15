@@ -46,9 +46,23 @@ export class UsersService {
     };
   }
 
-  async findById(id: string): Promise<UserResponseDto> {
+  /**
+   * Full record (email, balances, role) — owner or admin only. Authorized
+   * before the lookup so a non-owner cannot probe which ids exist.
+   */
+  async findById(
+    requestingUserId: string,
+    targetId: string,
+  ): Promise<UserResponseDto> {
+    await assertOwnerOrAdmin(
+      this.prisma,
+      requestingUserId,
+      targetId,
+      'Cannot view another user',
+    );
+
     const user = await this.prisma.client.user.findUnique({
-      where: { id },
+      where: { id: targetId },
       select: USER_SELECT,
     });
     if (!user) throw new NotFoundException('User not found');
