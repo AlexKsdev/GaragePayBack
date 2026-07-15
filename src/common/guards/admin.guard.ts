@@ -18,9 +18,7 @@ export class AdminGuard implements CanActivate {
   constructor(private readonly prisma: PrismaService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context
-      .switchToHttp()
-      .getRequest<AuthenticatedRequest>();
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const userId = request.user?.id;
     if (!userId) throw new ForbiddenException('Admin access required');
 

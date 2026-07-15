@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { assertOwnerOrAdmin } from '../../common/ownership.util';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -98,17 +97,16 @@ export class UsersService {
     requestingUserId: string,
     targetId: string,
     dto: UpdateUserDto,
-    requestingRole?: Role,
   ): Promise<UserResponseDto> {
     const target = await this.prisma.client.user.findUnique({
       where: { id: targetId },
     });
     if (!target) throw new NotFoundException('User not found');
 
-    assertOwnerOrAdmin(
+    await assertOwnerOrAdmin(
+      this.prisma,
       requestingUserId,
       targetId,
-      requestingRole ?? Role.USER,
       'Cannot update another user',
     );
 
@@ -127,20 +125,16 @@ export class UsersService {
     return this.present(updated);
   }
 
-  async delete(
-    requestingUserId: string,
-    targetId: string,
-    requestingRole: Role,
-  ): Promise<void> {
+  async delete(requestingUserId: string, targetId: string): Promise<void> {
     const target = await this.prisma.client.user.findUnique({
       where: { id: targetId },
     });
     if (!target) throw new NotFoundException('User not found');
 
-    assertOwnerOrAdmin(
+    await assertOwnerOrAdmin(
+      this.prisma,
       requestingUserId,
       targetId,
-      requestingRole,
       'Cannot delete another user',
     );
 
