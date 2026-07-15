@@ -116,9 +116,16 @@ export class AuthService {
     };
   }
 
-  async logout(userId: string, refreshToken: string): Promise<void> {
+  /**
+   * Revokes the presented refresh token. Identified by the token alone — it is
+   * an unguessable 48-byte random value, so it is its own credential. Not gated
+   * on a live access token: those expire in 15 minutes while the refresh token
+   * lives 7 days, and a user must always be able to end their session.
+   * Idempotent — an unknown or already-revoked token is a no-op.
+   */
+  async logout(refreshToken: string): Promise<void> {
     await this.prisma.client.refreshToken.deleteMany({
-      where: { userId, token: refreshToken },
+      where: { token: refreshToken },
     });
   }
 

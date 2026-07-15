@@ -15,8 +15,6 @@ import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { SkipCsrf } from '../../common/decorators/skip-csrf.decorator';
-import { JwtGuard } from '../../common/guards/jwt.guard';
-import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
 import {
   ACCESS_TTL_MS,
   authCookieOptions,
@@ -66,18 +64,21 @@ export class AuthController {
     return { user: result.user };
   }
 
+  // Deliberately not gated on JwtGuard: the access token expires in 15 minutes
+  // while the refresh cookie lives 7 days, so gating here would leave an idle
+  // user unable to log out — and unable to clear the httpOnly cookies from JS —
+  // walking away with a live session. The refresh cookie is the credential, and
+  // the CSRF guard still applies.
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @UseGuards(JwtGuard)
   async logout(
-    @CurrentUser() user: AuthenticatedRequest['user'],
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     const refreshToken = req.cookies?.[COOKIE_NAMES.refresh] as
       | string
       | undefined;
-    if (refreshToken) await this.authService.logout(user.id, refreshToken);
+    if (refreshToken) await this.authService.logout(refreshToken);
     this.clearAuthCookies(res);
   }
 
