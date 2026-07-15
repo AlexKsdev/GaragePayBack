@@ -3,7 +3,7 @@ import { AuthConfig } from './auth.config';
 
 function makeConfig(secret?: string): AuthConfig {
   const configService = {
-    get: (_key: string) => secret,
+    get: () => secret,
   } as unknown as ConfigService;
   return new AuthConfig(configService);
 }

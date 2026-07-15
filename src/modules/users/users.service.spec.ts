@@ -94,12 +94,14 @@ describe('UsersService', () => {
 
   describe('update()', () => {
     it('throws ForbiddenException when non-owner updates', async () => {
-      mockPrisma.client.user.findUnique
-        .mockResolvedValueOnce({ ...baseUser }) // target lookup
-        .mockResolvedValueOnce({ role: Role.USER }); // requester is NOT admin in the DB
+      // Authz runs first, so the requester's role check is the only lookup.
+      mockPrisma.client.user.findUnique.mockResolvedValueOnce({
+        role: Role.USER,
+      });
       await expect(
         service.update('cother', 'ctest1', { name: 'New' }),
       ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.client.user.findUnique).toHaveBeenCalledTimes(1);
     });
 
     it('throws ConflictException when new email is already taken', async () => {
@@ -113,8 +115,8 @@ describe('UsersService', () => {
 
     it('allows admin to update another user', async () => {
       mockPrisma.client.user.findUnique
-        .mockResolvedValueOnce({ ...baseUser }) // target lookup
-        .mockResolvedValueOnce({ role: Role.ADMIN }); // requester admin check (DB)
+        .mockResolvedValueOnce({ role: Role.ADMIN }) // requester admin check (DB) — runs first
+        .mockResolvedValueOnce({ ...baseUser }); // target lookup
       mockPrisma.client.user.update.mockResolvedValue({
         ...baseUser,
         name: 'Updated',
@@ -180,12 +182,14 @@ describe('UsersService', () => {
 
   describe('delete()', () => {
     it('throws ForbiddenException for non-owner/non-admin', async () => {
-      mockPrisma.client.user.findUnique
-        .mockResolvedValueOnce({ ...baseUser }) // target lookup
-        .mockResolvedValueOnce({ role: Role.USER }); // requester is NOT admin in the DB
+      // Authz runs first, so the requester's role check is the only lookup.
+      mockPrisma.client.user.findUnique.mockResolvedValueOnce({
+        role: Role.USER,
+      });
       await expect(service.delete('cother', 'ctest1')).rejects.toThrow(
         ForbiddenException,
       );
+      expect(mockPrisma.client.user.findUnique).toHaveBeenCalledTimes(1);
     });
 
     it('allows owner to delete their own account', async () => {
