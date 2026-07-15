@@ -7,8 +7,7 @@ export class AuthUserDto {
   role: Role;
 }
 
+/** Tokens are delivered as httpOnly cookies, never in the body. */
 export class AuthResponseDto {
-  accessToken: string;
-  refreshToken: string;
   user: AuthUserDto;
 }

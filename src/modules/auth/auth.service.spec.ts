@@ -198,9 +198,9 @@ describe('AuthService', () => {
   describe('refresh()', () => {
     it('throws UnauthorizedException when token not found', async () => {
       mockPrisma.client.refreshToken.findUnique.mockResolvedValue(null);
-      await expect(
-        service.refresh({ refreshToken: 'bad-token' }),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.refresh('bad-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('throws UnauthorizedException when token is expired', async () => {
@@ -210,9 +210,9 @@ describe('AuthService', () => {
         expiresAt: new Date(Date.now() - 1000),
         user: { ...baseUser },
       });
-      await expect(
-        service.refresh({ refreshToken: 'old-token' }),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.refresh('old-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('returns a new accessToken for valid token', async () => {
@@ -222,7 +222,7 @@ describe('AuthService', () => {
         expiresAt: new Date(Date.now() + 100_000),
         user: { ...baseUser },
       });
-      const result = await service.refresh({ refreshToken: 'valid-token' });
+      const result = await service.refresh('valid-token');
       expect(result.accessToken).toBeDefined();
     });
   });
