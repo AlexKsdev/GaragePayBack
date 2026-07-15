@@ -14,12 +14,18 @@ import { AuthConfig } from '../../config/auth.config';
 import { frontendBaseUrl } from '../../config/frontend.config';
 import { JwtPayload } from '../../common/types/jwt-payload.type';
 import { MailService } from '../mail/mail.service';
-import { AuthResponseDto } from './dto/auth-response.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { AuthUserDto } from './dto/auth-response.dto';
 import { RegisterDto } from './dto/register.dto';
 
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+
+/** Internal shape only — never returned directly from a controller. */
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  user: AuthUserDto;
+}
 
 @Injectable()
 export class AuthService {
@@ -30,7 +36,7 @@ export class AuthService {
     private readonly mail: MailService,
   ) {}
 
-  async register(dto: RegisterDto): Promise<AuthResponseDto> {
+  async register(dto: RegisterDto): Promise<AuthTokens> {
     const existing = await this.prisma.client.user.findUnique({
       where: { email: dto.email },
     });
@@ -70,7 +76,7 @@ export class AuthService {
     return valid ? user : null;
   }
 
-  async login(user: User): Promise<AuthResponseDto> {
+  async login(user: User): Promise<AuthTokens> {
     const rt = await this.prisma.client.refreshToken.create({
       data: this.newRefreshToken(user.id),
     });
@@ -87,16 +93,16 @@ export class AuthService {
     };
   }
 
-  async refresh(dto: RefreshTokenDto): Promise<{ accessToken: string }> {
+  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
     const record = await this.prisma.client.refreshToken.findUnique({
-      where: { token: dto.refreshToken },
+      where: { token: refreshToken },
       include: { user: true },
     });
 
     if (!record) throw new UnauthorizedException('Invalid refresh token');
     if (record.expiresAt < new Date()) {
       await this.prisma.client.refreshToken.delete({
-        where: { token: dto.refreshToken },
+        where: { token: refreshToken },
       });
       throw new UnauthorizedException('Refresh token expired');
     }
@@ -110,9 +116,16 @@ export class AuthService {
     };
   }
 
-  async logout(userId: string, refreshToken: string): Promise<void> {
+  /**
+   * Revokes the presented refresh token. Identified by the token alone — it is
+   * an unguessable 48-byte random value, so it is its own credential. Not gated
+   * on a live access token: those expire in 15 minutes while the refresh token
+   * lives 7 days, and a user must always be able to end their session.
+   * Idempotent — an unknown or already-revoked token is a no-op.
+   */
+  async logout(refreshToken: string): Promise<void> {
     await this.prisma.client.refreshToken.deleteMany({
-      where: { userId, token: refreshToken },
+      where: { token: refreshToken },
     });
   }
 
