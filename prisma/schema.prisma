@@ -30,6 +30,17 @@ model User {
   name         String
   role         Role     @default(USER)
 
+  // Set false to ban: blocks login and refresh, and fails the admin check.
+  // A live access token still works until it expires (<= 15 min).
+  active Boolean @default(true)
+
+  // TOTP two-factor. `totpSecret` is written at setup but only takes effect
+  // once `totpEnabled` flips, which requires proving a first valid code.
+  // Mandatory for admins (AdminGuard rejects an admin without it), optional
+  // for everyone else.
+  totpSecret  String?
+  totpEnabled Boolean @default(false)
+
   // Player profile / game stats (surfaced on the account dashboard)
   rank            String  @default("Rookie")
   avatar          String?
