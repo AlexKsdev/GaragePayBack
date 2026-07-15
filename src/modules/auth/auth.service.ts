@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -16,6 +17,8 @@ import { JwtPayload } from '../../common/types/jwt-payload.type';
 import { MailService } from '../mail/mail.service';
 import { AuthUserDto } from './dto/auth-response.dto';
 import { RegisterDto } from './dto/register.dto';
+import { TwoFactorSetupResponseDto } from './dto/two-factor.dto';
+import { TotpService } from './totp.service';
 
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -34,6 +37,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     @Inject(AuthConfig) private readonly authConfig: AuthConfig,
     private readonly mail: MailService,
+    private readonly totp: TotpService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthTokens> {
@@ -161,6 +165,94 @@ export class AuthService {
     await this.prisma.client.refreshToken.updateMany({
       where: { tokenHash: this.hashToken(refreshToken), revokedAt: null },
       data: { revokedAt: new Date() },
+    });
+  }
+
+  /**
+   * Starts 2FA enrolment: mints a secret and stores it, but leaves 2FA off
+   * until `enableTwoFactor` proves the user can actually produce a code —
+   * otherwise a mis-scanned QR would lock them out of their own account.
+   *
+   * Refuses to re-run while 2FA is on: otherwise anyone holding a live session
+   * could silently swap the secret for one of their own and keep the account
+   * even after the owner changed their password.
+   */
+  async setupTwoFactor(userId: string): Promise<TwoFactorSetupResponseDto> {
+    const user = await this.prisma.client.user.findUnique({
+      where: { id: userId },
+      select: { email: true, totpEnabled: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.totpEnabled) {
+      throw new BadRequestException(
+        'Two-factor authentication is already enabled. Disable it first.',
+      );
+    }
+
+    const secret = this.totp.generateSecret();
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { totpSecret: secret },
+    });
+
+    return {
+      otpauthUrl: this.totp.toUri(secret, user.email),
+      qrDataUrl: await this.totp.toQrDataUrl(secret, user.email),
+    };
+  }
+
+  /** Turns 2FA on, but only once the user proves they hold the secret. */
+  async enableTwoFactor(userId: string, code: string): Promise<void> {
+    const user = await this.prisma.client.user.findUnique({
+      where: { id: userId },
+      select: { totpSecret: true, totpEnabled: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.totpEnabled) {
+      throw new BadRequestException(
+        'Two-factor authentication is already enabled',
+      );
+    }
+    if (!user.totpSecret) {
+      throw new BadRequestException('Start setup before enabling');
+    }
+    if (!this.totp.verify(code, user.totpSecret)) {
+      throw new BadRequestException('Invalid code');
+    }
+
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { totpEnabled: true },
+    });
+  }
+
+  /**
+   * Turns 2FA off. This is a security downgrade, so it re-proves both factors:
+   * a hijacked session alone must not be enough to strip the second factor.
+   */
+  async disableTwoFactor(
+    userId: string,
+    password: string,
+    code: string,
+  ): Promise<void> {
+    const user = await this.prisma.client.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true, totpSecret: true, totpEnabled: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.totpEnabled || !user.totpSecret) {
+      throw new BadRequestException('Two-factor authentication is not enabled');
+    }
+    if (!(await bcrypt.compare(password, user.passwordHash))) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+    if (!this.totp.verify(code, user.totpSecret)) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { totpEnabled: false, totpSecret: null },
     });
   }
 

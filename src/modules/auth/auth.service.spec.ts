@@ -12,6 +12,17 @@ import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
+import { TotpService } from './totp.service';
+import { Secret, TOTP } from 'otpauth';
+
+/** Mints a genuine code the way an authenticator app would. */
+function currentCode(base32: string): string {
+  return new TOTP({
+    issuer: 'PureCraft',
+    label: 'PureCraft',
+    secret: Secret.fromBase32(base32),
+  }).generate();
+}
 
 const mockPrisma = {
   client: {
@@ -87,6 +98,7 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: mockJwt },
         { provide: AuthConfig, useValue: mockAuthConfig },
         { provide: MailService, useValue: mockMailService },
+        TotpService,
       ],
     }).compile();
 
@@ -291,6 +303,129 @@ describe('AuthService', () => {
       });
       // No replacement is handed out to a replayer.
       expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('two-factor enrolment', () => {
+    describe('setupTwoFactor()', () => {
+      it('stores a secret but leaves 2FA off until a code is proven', async () => {
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          email: 'a@b.com',
+          totpEnabled: false,
+        });
+        mockPrisma.client.user.update.mockResolvedValue({});
+
+        const result = await service.setupTwoFactor('ctest123');
+
+        expect(result.otpauthUrl).toContain('otpauth://totp/');
+        expect(result.qrDataUrl.startsWith('data:image/png;base64,')).toBe(
+          true,
+        );
+        const updateCalls = mockPrisma.client.user.update.mock.calls;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        const call = updateCalls[0][0] as {
+          data: { totpSecret: string; totpEnabled?: boolean };
+        };
+        expect(call.data.totpSecret).toMatch(/^[A-Z2-7]+$/);
+        // Crucially NOT enabled yet — a mis-scanned QR must not lock the user out.
+        expect(call.data.totpEnabled).toBeUndefined();
+      });
+
+      it('refuses to re-issue a secret while 2FA is already on', async () => {
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          email: 'a@b.com',
+          totpEnabled: true,
+        });
+        // Otherwise a hijacked session could swap in the attacker's own secret.
+        await expect(service.setupTwoFactor('ctest123')).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('enableTwoFactor()', () => {
+      it('turns 2FA on for a valid code', async () => {
+        const secret = new TotpService().generateSecret();
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          totpSecret: secret,
+          totpEnabled: false,
+        });
+        mockPrisma.client.user.update.mockResolvedValue({});
+
+        await service.enableTwoFactor('ctest123', currentCode(secret));
+
+        expect(mockPrisma.client.user.update).toHaveBeenCalledWith({
+          where: { id: 'ctest123' },
+          data: { totpEnabled: true },
+        });
+      });
+
+      it('rejects a wrong code and leaves 2FA off', async () => {
+        const secret = new TotpService().generateSecret();
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          totpSecret: secret,
+          totpEnabled: false,
+        });
+        await expect(
+          service.enableTwoFactor('ctest123', '000000'),
+        ).rejects.toThrow(BadRequestException);
+        expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+      });
+
+      it('rejects enabling before setup has run', async () => {
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          totpSecret: null,
+          totpEnabled: false,
+        });
+        await expect(
+          service.enableTwoFactor('ctest123', '123456'),
+        ).rejects.toThrow(BadRequestException);
+      });
+    });
+
+    describe('disableTwoFactor()', () => {
+      const secret = new TotpService().generateSecret();
+
+      function enrolledUser() {
+        return {
+          passwordHash: baseUser.passwordHash,
+          totpSecret: secret,
+          totpEnabled: true,
+        };
+      }
+
+      it('clears the secret when password and code both check out', async () => {
+        mockPrisma.client.user.findUnique.mockResolvedValue(enrolledUser());
+        mockPrisma.client.user.update.mockResolvedValue({});
+
+        await service.disableTwoFactor(
+          'ctest123',
+          'password123',
+          currentCode(secret),
+        );
+
+        expect(mockPrisma.client.user.update).toHaveBeenCalledWith({
+          where: { id: 'ctest123' },
+          data: { totpEnabled: false, totpSecret: null },
+        });
+      });
+
+      it('refuses on a wrong password even with a valid code', async () => {
+        mockPrisma.client.user.findUnique.mockResolvedValue(enrolledUser());
+        await expect(
+          service.disableTwoFactor('ctest123', 'wrong', currentCode(secret)),
+        ).rejects.toThrow(UnauthorizedException);
+        expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+      });
+
+      it('refuses on a wrong code even with the right password — a hijacked session alone cannot strip 2FA', async () => {
+        mockPrisma.client.user.findUnique.mockResolvedValue(enrolledUser());
+        await expect(
+          service.disableTwoFactor('ctest123', 'password123', '000000'),
+        ).rejects.toThrow(UnauthorizedException);
+        expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+      });
     });
   });
 
