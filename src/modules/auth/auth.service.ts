@@ -61,7 +61,13 @@ export class AuthService {
             name: dto.name,
             role: dto.role ?? Role.USER,
           },
-          select: { id: true, email: true, name: true, role: true },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            totpEnabled: true,
+          },
         });
         const rt = this.newRefreshToken(created.id);
         await tx.refreshToken.create({ data: rt.data });
@@ -156,6 +162,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
+        totpEnabled: user.totpEnabled,
       },
     };
   }

@@ -6,7 +6,7 @@ import {
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Role, type User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -404,6 +404,21 @@ describe('AuthService', () => {
       await expect(
         svc.verifyTwoFactorLogin(pending, currentCode(secret)),
       ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('login() user payload', () => {
+    it('surfaces totpEnabled so the client can render the real 2FA state', async () => {
+      mockPrisma.client.refreshToken.create.mockResolvedValue({
+        token: 'refresh-token',
+      });
+
+      const result = await service.login({
+        ...baseUser,
+        totpEnabled: true,
+      } as unknown as User);
+
+      expect(result.user.totpEnabled).toBe(true);
     });
   });
 
