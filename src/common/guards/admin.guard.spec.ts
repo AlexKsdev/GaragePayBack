@@ -22,19 +22,49 @@ describe('AdminGuard', () => {
     jest.clearAllMocks();
   });
 
-  it('allows a user whose DB role is ADMIN', async () => {
-    mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.ADMIN });
+  it('allows an active ADMIN with 2FA enabled', async () => {
+    mockPrisma.client.user.findUnique.mockResolvedValue({
+      role: Role.ADMIN,
+      active: true,
+      totpEnabled: true,
+    });
     await expect(guard.canActivate(buildContext('admin-1'))).resolves.toBe(
       true,
     );
     expect(mockPrisma.client.user.findUnique).toHaveBeenCalledWith({
       where: { id: 'admin-1' },
-      select: { role: true },
+      select: { role: true, active: true, totpEnabled: true },
     });
   });
 
+  it('rejects an ADMIN who has not enabled 2FA', async () => {
+    mockPrisma.client.user.findUnique.mockResolvedValue({
+      role: Role.ADMIN,
+      active: true,
+      totpEnabled: false,
+    });
+    await expect(guard.canActivate(buildContext('admin-1'))).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
+  it('rejects a banned ADMIN even with 2FA enabled', async () => {
+    mockPrisma.client.user.findUnique.mockResolvedValue({
+      role: Role.ADMIN,
+      active: false,
+      totpEnabled: true,
+    });
+    await expect(guard.canActivate(buildContext('admin-1'))).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
   it('rejects a user whose DB role is USER (stale/forged admin claim)', async () => {
-    mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER });
+    mockPrisma.client.user.findUnique.mockResolvedValue({
+      role: Role.USER,
+      active: true,
+      totpEnabled: true,
+    });
     await expect(guard.canActivate(buildContext('user-1'))).rejects.toThrow(
       ForbiddenException,
     );

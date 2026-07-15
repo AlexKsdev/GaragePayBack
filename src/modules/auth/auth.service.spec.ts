@@ -77,6 +77,9 @@ const baseUser = {
   email: 'test@test.com',
   name: 'Test User',
   role: Role.USER,
+  active: true,
+  totpEnabled: false,
+  totpSecret: null as string | null,
   passwordHash: '',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -303,6 +306,118 @@ describe('AuthService', () => {
       });
       // No replacement is handed out to a replayer.
       expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('two-step login', () => {
+    const realJwt = new JwtService({});
+    const SECRET = 'test-secret';
+
+    function serviceWithRealJwt(): AuthService {
+      return new AuthService(
+        mockPrisma as unknown as PrismaService,
+        realJwt,
+        mockAuthConfig as unknown as AuthConfig,
+        mockMailService as unknown as MailService,
+        new TotpService(),
+      );
+    }
+
+    it('rejects a normal access token presented as a pending-2FA token', async () => {
+      const svc = serviceWithRealJwt();
+      // Exactly what signAccessToken produces: a real, valid, signed session
+      // token — it simply lacks the 2FA purpose claim.
+      const accessToken = realJwt.sign(
+        { sub: 'ctest123', email: 'a@b.com', role: Role.USER },
+        { secret: SECRET, expiresIn: '15m' },
+      );
+
+      await expect(
+        svc.verifyTwoFactorLogin(accessToken, '123456'),
+      ).rejects.toThrow(UnauthorizedException);
+      // Never even looked the user up — refused on the claim alone.
+      expect(mockPrisma.client.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token signed with the wrong secret', async () => {
+      const svc = serviceWithRealJwt();
+      const forged = realJwt.sign(
+        { sub: 'ctest123', purpose: '2fa' },
+        { secret: 'attacker-secret', expiresIn: '5m' },
+      );
+      await expect(svc.verifyTwoFactorLogin(forged, '123456')).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('completes the login for a valid pending token + code', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      const pending = svc.signPending2faToken('ctest123');
+
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: true,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+      mockPrisma.client.refreshToken.create.mockResolvedValue({});
+
+      const result = await svc.verifyTwoFactorLogin(
+        pending,
+        currentCode(secret),
+      );
+      expect(result.user.email).toBe(baseUser.email);
+      expect(result.refreshToken).toMatch(/^[0-9a-f]{96}$/);
+    });
+
+    it('rejects a wrong code even with a valid pending token', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      const pending = svc.signPending2faToken('ctest123');
+
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: true,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+
+      await expect(svc.verifyTwoFactorLogin(pending, '000000')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a banned account', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      const pending = svc.signPending2faToken('ctest123');
+
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: false,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+
+      await expect(
+        svc.verifyTwoFactorLogin(pending, currentCode(secret)),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('validateUser() ban check', () => {
+    it('rejects a banned account exactly like a bad password', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: false,
+      });
+      // Correct password, but the answer is the same null as a wrong one — no
+      // hint that the credentials were right.
+      await expect(
+        service.validateUser('test@test.com', 'password123'),
+      ).resolves.toBeNull();
     });
   });
 

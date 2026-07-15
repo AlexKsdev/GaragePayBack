@@ -24,3 +24,8 @@ export class TwoFactorSetupResponseDto {
   /** PNG data URL of the same URI. */
   qrDataUrl: string;
 }
+
+/** Returned by /auth/login when the password was right but a code is owed. */
+export class TwoFactorRequiredDto {
+  twoFactorRequired: true;
+}

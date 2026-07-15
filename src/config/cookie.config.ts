@@ -5,6 +5,10 @@ export const COOKIE_NAMES = {
   refresh: 'pc_refresh',
   csrf: 'pc_csrf',
   user: 'pc_user',
+  // Half-finished login: password accepted, TOTP code still owed. Read only by
+  // /auth/2fa/verify. Deliberately a separate cookie from `access` — the JWT
+  // strategy reads `access` alone, so this can never authenticate anything.
+  pending2fa: 'pc_2fa',
 } as const;
 
 export const ACCESS_TTL_MS = 15 * 60 * 1000;
