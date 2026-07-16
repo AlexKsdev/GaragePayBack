@@ -35,6 +35,7 @@ import {
   TwoFactorSetupResponseDto,
 } from './dto/two-factor.dto';
 import { PENDING_2FA_TTL_MS } from '../../config/totp.config';
+import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { LocalGuard } from './guards/local.guard';
 
@@ -97,7 +98,13 @@ export class AuthController {
     const pending = req.cookies?.[COOKIE_NAMES.pending2fa] as
       | string
       | undefined;
-    if (!pending) throw new UnauthorizedException('No two-factor session');
+    if (!pending)
+      throw new UnauthorizedException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionExpired,
+          'No two-factor session',
+        ),
+      );
 
     const result = await this.authService.verifyTwoFactorLogin(
       pending,

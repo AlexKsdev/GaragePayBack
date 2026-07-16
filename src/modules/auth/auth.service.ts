@@ -23,6 +23,7 @@ import {
   PENDING_2FA_TTL_MS,
 } from '../../config/totp.config';
 import { TotpService } from './totp.service';
+import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
 
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -48,7 +49,10 @@ export class AuthService {
     const existing = await this.prisma.client.user.findUnique({
       where: { email: dto.email },
     });
-    if (existing) throw new ConflictException('Email already in use');
+    if (existing)
+      throw new ConflictException(
+        authError(AUTH_ERROR_CODES.emailInUse, 'Email already in use'),
+      );
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -126,25 +130,42 @@ export class AuthService {
         secret: this.authConfig.jwtSecret,
       });
     } catch {
-      throw new UnauthorizedException('Two-factor session expired');
+      throw new UnauthorizedException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionExpired,
+          'Two-factor session expired',
+        ),
+      );
     }
     // A normal access token must never be redeemable here.
     if (payload.purpose !== PENDING_2FA_PURPOSE || !payload.sub) {
-      throw new UnauthorizedException('Invalid two-factor session');
+      throw new UnauthorizedException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionInvalid,
+          'Invalid two-factor session',
+        ),
+      );
     }
 
     const user = await this.prisma.client.user.findUnique({
       where: { id: payload.sub },
     });
     if (!user || !user.active)
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
+      );
     if (!user.totpEnabled || !user.totpSecret) {
       throw new UnauthorizedException(
-        'Two-factor authentication is not enabled',
+        authError(
+          AUTH_ERROR_CODES.twoFactorNotEnabled,
+          'Two-factor authentication is not enabled',
+        ),
       );
     }
     if (!this.totp.verify(code, user.totpSecret)) {
-      throw new UnauthorizedException('Invalid code');
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
+      );
     }
 
     return this.login(user);
@@ -261,10 +282,16 @@ export class AuthService {
       where: { id: userId },
       select: { email: true, totpEnabled: true },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user)
+      throw new NotFoundException(
+        authError(AUTH_ERROR_CODES.userNotFound, 'User not found'),
+      );
     if (user.totpEnabled) {
       throw new BadRequestException(
-        'Two-factor authentication is already enabled. Disable it first.',
+        authError(
+          AUTH_ERROR_CODES.twoFactorAlreadyEnabled,
+          'Two-factor authentication is already enabled. Disable it first.',
+        ),
       );
     }
 
@@ -286,17 +313,30 @@ export class AuthService {
       where: { id: userId },
       select: { totpSecret: true, totpEnabled: true },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user)
+      throw new NotFoundException(
+        authError(AUTH_ERROR_CODES.userNotFound, 'User not found'),
+      );
     if (user.totpEnabled) {
       throw new BadRequestException(
-        'Two-factor authentication is already enabled',
+        authError(
+          AUTH_ERROR_CODES.twoFactorAlreadyEnabled,
+          'Two-factor authentication is already enabled',
+        ),
       );
     }
     if (!user.totpSecret) {
-      throw new BadRequestException('Start setup before enabling');
+      throw new BadRequestException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSetupMissing,
+          'Start setup before enabling',
+        ),
+      );
     }
     if (!this.totp.verify(code, user.totpSecret)) {
-      throw new BadRequestException('Invalid code');
+      throw new BadRequestException(
+        authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
+      );
     }
 
     await this.prisma.client.user.update({
@@ -318,15 +358,27 @@ export class AuthService {
       where: { id: userId },
       select: { passwordHash: true, totpSecret: true, totpEnabled: true },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user)
+      throw new NotFoundException(
+        authError(AUTH_ERROR_CODES.userNotFound, 'User not found'),
+      );
     if (!user.totpEnabled || !user.totpSecret) {
-      throw new BadRequestException('Two-factor authentication is not enabled');
+      throw new BadRequestException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorNotEnabled,
+          'Two-factor authentication is not enabled',
+        ),
+      );
     }
     if (!(await bcrypt.compare(password, user.passwordHash))) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
+      );
     }
     if (!this.totp.verify(code, user.totpSecret)) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
+      );
     }
 
     await this.prisma.client.user.update({
@@ -375,7 +427,12 @@ export class AuthService {
       where: { tokenHash: this.hashToken(token) },
     });
     if (!record || record.expiresAt < new Date()) {
-      throw new BadRequestException('Invalid or expired reset token');
+      throw new BadRequestException(
+        authError(
+          AUTH_ERROR_CODES.resetTokenInvalid,
+          'Invalid or expired reset token',
+        ),
+      );
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
