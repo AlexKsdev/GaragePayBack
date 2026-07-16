@@ -4,11 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AdminActionType, Prisma } from '@prisma/client';
+import { AdminActionType, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { assertOwnerOrAdmin } from '../../common/ownership.util';
 import { AuditService } from '../audit/audit.service';
+import { AdjustBalanceDto } from './dto/adjust-balance.dto';
 import { PaginatedUsersResponseDto } from './dto/paginated-users-response.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
@@ -200,6 +201,124 @@ export class UsersService {
               .filter(([, value]) => value !== undefined)
               .map(([field]) => field),
             email: dto.email ?? null,
+          },
+          ip,
+        },
+        tx,
+      );
+      return row;
+    });
+    return this.present(updated);
+  }
+
+  /**
+   * Admin-only (gated by AdminGuard). Changing a role is recorded with the old
+   * and new value inside the same transaction as the change itself.
+   */
+  async changeRole(
+    actorId: string,
+    targetId: string,
+    role: Role,
+    ip?: string,
+  ): Promise<UserResponseDto> {
+    // Refused before the lookup: the last admin demoting themselves would lock
+    // everyone out of the panel, recoverable only by editing the database.
+    if (actorId === targetId) {
+      throw new BadRequestException('Cannot change your own role');
+    }
+
+    const target = await this.prisma.client.user.findUnique({
+      where: { id: targetId },
+      select: { role: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
+
+    const updated = await this.prisma.client.$transaction(async (tx) => {
+      const row = await tx.user.update({
+        where: { id: targetId },
+        data: { role },
+        select: USER_SELECT,
+      });
+      await this.audit.record(
+        {
+          actorId,
+          action: AdminActionType.USER_ROLE_CHANGE,
+          targetType: 'User',
+          targetId,
+          metadata: { from: target.role, to: role },
+          ip,
+        },
+        tx,
+      );
+      return row;
+    });
+    return this.present(updated);
+  }
+
+  /**
+   * Admin-only (gated by AdminGuard). Takes a delta rather than a new total, so
+   * two admins adjusting at once both land instead of one overwriting the other.
+   */
+  async adjustBalance(
+    actorId: string,
+    targetId: string,
+    dto: AdjustBalanceDto,
+    ip?: string,
+  ): Promise<UserResponseDto> {
+    const coins = dto.coins ?? 0;
+    const gems = dto.gems ?? 0;
+    if (coins === 0 && gems === 0) {
+      throw new BadRequestException('Provide a non-zero coins or gems change');
+    }
+
+    const target = await this.prisma.client.user.findUnique({
+      where: { id: targetId },
+      select: { coins: true, gems: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
+
+    // Neither the shop nor the profile can mean anything sensible by a negative
+    // balance, so an overdrawing deduction is refused rather than clamped.
+    if (target.coins + coins < 0 || target.gems + gems < 0) {
+      throw new BadRequestException('Adjustment would overdraw the balance');
+    }
+
+    const updated = await this.prisma.client.$transaction(async (tx) => {
+      const row = await tx.user.update({
+        where: { id: targetId },
+        data: {
+          ...(coins !== 0 ? { coins: { increment: coins } } : {}),
+          ...(gems !== 0 ? { gems: { increment: gems } } : {}),
+        },
+        select: USER_SELECT,
+      });
+      await this.audit.record(
+        {
+          actorId,
+          action: AdminActionType.USER_BALANCE_CHANGE,
+          targetType: 'User',
+          targetId,
+          // Before and after, so an incident review can read the movement
+          // without replaying every row.
+          metadata: {
+            ...(coins !== 0
+              ? {
+                  coins: {
+                    from: target.coins,
+                    delta: coins,
+                    to: target.coins + coins,
+                  },
+                }
+              : {}),
+            ...(gems !== 0
+              ? {
+                  gems: {
+                    from: target.gems,
+                    delta: gems,
+                    to: target.gems + gems,
+                  },
+                }
+              : {}),
           },
           ip,
         },

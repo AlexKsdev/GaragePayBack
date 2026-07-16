@@ -300,6 +300,152 @@ describe('UsersService', () => {
     });
   });
 
+  describe('changeRole()', () => {
+    it('promotes another user and records the change', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        role: Role.USER,
+      });
+      mockPrisma.client.user.update.mockResolvedValue({
+        ...baseUser,
+        role: Role.ADMIN,
+      });
+
+      const result = await service.changeRole(
+        'cadmin',
+        'ctest1',
+        Role.ADMIN,
+        '203.0.113.7',
+      );
+
+      expect(result.role).toBe(Role.ADMIN);
+      expect(auditRow()).toMatchObject({
+        actorId: 'cadmin',
+        action: AdminActionType.USER_ROLE_CHANGE,
+        targetType: 'User',
+        targetId: 'ctest1',
+        metadata: { from: Role.USER, to: Role.ADMIN },
+        ip: '203.0.113.7',
+      });
+    });
+
+    // Otherwise the last admin can demote themselves and lock everyone out of
+    // the panel — with no way back in short of a manual database edit.
+    it('refuses to let an admin change their own role', async () => {
+      await expect(
+        service.changeRole('cadmin', 'cadmin', Role.USER),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException for an unknown target', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(null);
+      await expect(
+        service.changeRole('cadmin', 'cghost', Role.ADMIN),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('rolls the change back when the audit write fails', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+      mockPrisma.client.adminAction.create.mockRejectedValueOnce(
+        new Error('log down'),
+      );
+
+      await expect(
+        service.changeRole('cadmin', 'ctest1', Role.ADMIN),
+      ).rejects.toThrow('log down');
+    });
+  });
+
+  describe('adjustBalance()', () => {
+    beforeEach(() => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        coins: 100,
+        gems: 10,
+      });
+      mockPrisma.client.user.update.mockResolvedValue({
+        ...baseUser,
+        coins: 150,
+        gems: 10,
+      });
+    });
+
+    // A delta, not a new total: two admins adjusting at once must both land,
+    // rather than the second silently overwriting the first.
+    it('applies the change as an increment, not an overwrite', async () => {
+      await service.adjustBalance('cadmin', 'ctest1', { coins: 50 });
+
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { coins: { increment: 50 } } }),
+      );
+    });
+
+    it('records the adjustment with the before and after', async () => {
+      await service.adjustBalance(
+        'cadmin',
+        'ctest1',
+        { coins: 50 },
+        '198.51.100.9',
+      );
+
+      expect(auditRow()).toMatchObject({
+        actorId: 'cadmin',
+        action: AdminActionType.USER_BALANCE_CHANGE,
+        targetId: 'ctest1',
+        metadata: {
+          coins: { from: 100, delta: 50, to: 150 },
+        },
+        ip: '198.51.100.9',
+      });
+    });
+
+    it('deducts on a negative delta', async () => {
+      await service.adjustBalance('cadmin', 'ctest1', { gems: -5 });
+
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { gems: { increment: -5 } } }),
+      );
+    });
+
+    // A negative balance is not a state the shop or the profile can mean
+    // anything sensible about.
+    it('refuses a deduction that would overdraw the balance', async () => {
+      await expect(
+        service.adjustBalance('cadmin', 'ctest1', { coins: -101 }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a deduction down to exactly zero', async () => {
+      await service.adjustBalance('cadmin', 'ctest1', { coins: -100 });
+      expect(mockPrisma.client.user.update).toHaveBeenCalled();
+    });
+
+    it('refuses an adjustment that changes nothing', async () => {
+      await expect(
+        service.adjustBalance('cadmin', 'ctest1', {}),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws NotFoundException for an unknown target', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(null);
+      await expect(
+        service.adjustBalance('cadmin', 'cghost', { coins: 1 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('rolls the adjustment back when the audit write fails', async () => {
+      mockPrisma.client.adminAction.create.mockRejectedValueOnce(
+        new Error('log down'),
+      );
+
+      await expect(
+        service.adjustBalance('cadmin', 'ctest1', { coins: 50 }),
+      ).rejects.toThrow('log down');
+    });
+  });
+
   describe('audit log', () => {
     it('records an admin deleting someone else, with the actor and ip', async () => {
       // Requester is an admin (authz lookup), then the target exists.

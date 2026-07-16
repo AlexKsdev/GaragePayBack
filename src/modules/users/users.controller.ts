@@ -18,6 +18,8 @@ import { JwtGuard } from '../../common/guards/jwt.guard';
 import { StepUpGuard } from '../../common/guards/step-up.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
+import { AdjustBalanceDto } from './dto/adjust-balance.dto';
+import { ChangeRoleDto } from './dto/change-role.dto';
 import { GrantXpDto } from './dto/grant-xp.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { PaginatedUsersResponseDto } from './dto/paginated-users-response.dto';
@@ -69,6 +71,31 @@ export class UsersController {
     @Ip() ip: string,
   ): Promise<UserResponseDto> {
     return this.usersService.update(user.id, id, dto, ip);
+  }
+
+  // Role and balance are the levers an attacker with a hijacked admin session
+  // would reach for first, so both need admin rights *and* a factor re-proved
+  // in the last few minutes. Every call is recorded (see AuditService).
+  @Patch(':id/role')
+  @UseGuards(AdminGuard, StepUpGuard)
+  changeRole(
+    @Param('id', ParseCuidPipe) id: string,
+    @Body() dto: ChangeRoleDto,
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Ip() ip: string,
+  ): Promise<UserResponseDto> {
+    return this.usersService.changeRole(user.id, id, dto.role, ip);
+  }
+
+  @Patch(':id/balance')
+  @UseGuards(AdminGuard, StepUpGuard)
+  adjustBalance(
+    @Param('id', ParseCuidPipe) id: string,
+    @Body() dto: AdjustBalanceDto,
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Ip() ip: string,
+  ): Promise<UserResponseDto> {
+    return this.usersService.adjustBalance(user.id, id, dto, ip);
   }
 
   // Irreversible, so a live session alone is not enough — the caller must have
