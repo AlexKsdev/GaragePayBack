@@ -9,6 +9,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -18,6 +19,8 @@ import { StepUpGuard } from '../../common/guards/step-up.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
 import { GrantXpDto } from './dto/grant-xp.dto';
+import { ListUsersQueryDto } from './dto/list-users-query.dto';
+import { PaginatedUsersResponseDto } from './dto/paginated-users-response.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { UsersService } from './users.service';
@@ -29,8 +32,10 @@ export class UsersController {
 
   @Get()
   @UseGuards(AdminGuard)
-  findAll(): Promise<UserResponseDto[]> {
-    return this.usersService.findAll();
+  findAll(
+    @Query() query: ListUsersQueryDto,
+  ): Promise<PaginatedUsersResponseDto> {
+    return this.usersService.findAll(query, query.search);
   }
 
   @Get('me')
