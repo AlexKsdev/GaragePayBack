@@ -15,6 +15,7 @@ const USER_SELECT = {
   email: true,
   name: true,
   role: true,
+  totpEnabled: true,
   rank: true,
   avatar: true,
   xp: true,

@@ -55,13 +55,25 @@ describe('level.util', () => {
   describe('levelUpReward()', () => {
     it('gives 200 coins + 2 gems per level gained', () => {
       // 0 xp (L1) -> 100 xp (L2) = 1 level
-      expect(levelUpReward(0, 100)).toEqual({ levelsGained: 1, coins: 200, gems: 2 });
+      expect(levelUpReward(0, 100)).toEqual({
+        levelsGained: 1,
+        coins: 200,
+        gems: 2,
+      });
       // 0 xp (L1) -> 220 xp (L3) = 2 levels
-      expect(levelUpReward(0, 220)).toEqual({ levelsGained: 2, coins: 400, gems: 4 });
+      expect(levelUpReward(0, 220)).toEqual({
+        levelsGained: 2,
+        coins: 400,
+        gems: 4,
+      });
     });
 
     it('gives nothing when no level is crossed', () => {
-      expect(levelUpReward(0, 50)).toEqual({ levelsGained: 0, coins: 0, gems: 0 });
+      expect(levelUpReward(0, 50)).toEqual({
+        levelsGained: 0,
+        coins: 0,
+        gems: 0,
+      });
     });
   });
 });

@@ -6,13 +6,14 @@ import {
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Role, type User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
 import { TotpService } from './totp.service';
+import { AUTH_ERROR_CODES } from '../../config/error-codes.config';
 import { Secret, TOTP } from 'otpauth';
 
 /** Mints a genuine code the way an authenticator app would. */
@@ -389,6 +390,29 @@ describe('AuthService', () => {
       expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
     });
 
+    // The client localizes off the code, so losing it silently reverts the
+    // message to English rather than failing loudly.
+    it('tags a wrong code with a machine-readable code the client can localize', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      const pending = svc.signPending2faToken('ctest123');
+
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: true,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+
+      const thrown = await svc
+        .verifyTwoFactorLogin(pending, '000000')
+        .catch((e: UnauthorizedException) => e);
+
+      expect((thrown as UnauthorizedException).getResponse()).toMatchObject({
+        code: AUTH_ERROR_CODES.invalidCode,
+      });
+    });
+
     it('refuses a banned account', async () => {
       const svc = serviceWithRealJwt();
       const secret = new TotpService().generateSecret();
@@ -404,6 +428,21 @@ describe('AuthService', () => {
       await expect(
         svc.verifyTwoFactorLogin(pending, currentCode(secret)),
       ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('login() user payload', () => {
+    it('surfaces totpEnabled so the client can render the real 2FA state', async () => {
+      mockPrisma.client.refreshToken.create.mockResolvedValue({
+        token: 'refresh-token',
+      });
+
+      const result = await service.login({
+        ...baseUser,
+        totpEnabled: true,
+      } as unknown as User);
+
+      expect(result.user.totpEnabled).toBe(true);
     });
   });
 
