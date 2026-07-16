@@ -14,6 +14,7 @@ import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
 import { TotpService } from './totp.service';
 import { AUTH_ERROR_CODES } from '../../config/error-codes.config';
+import { STEP_UP_PURPOSE } from '../../config/step-up.config';
 import { Secret, TOTP } from 'otpauth';
 
 /** Mints a genuine code the way an authenticator app would. */
@@ -88,6 +89,21 @@ const baseUser = {
 
 describe('AuthService', () => {
   let service: AuthService;
+
+  // Signing/verifying for real, so the tests exercise the actual claims rather
+  // than a mock's say-so.
+  const realJwt = new JwtService({});
+  const SECRET = 'test-secret';
+
+  function serviceWithRealJwt(): AuthService {
+    return new AuthService(
+      mockPrisma as unknown as PrismaService,
+      realJwt,
+      mockAuthConfig as unknown as AuthConfig,
+      mockMailService as unknown as MailService,
+      new TotpService(),
+    );
+  }
 
   beforeEach(async () => {
     mockJwt.sign.mockReturnValue('signed-token');
@@ -311,19 +327,6 @@ describe('AuthService', () => {
   });
 
   describe('two-step login', () => {
-    const realJwt = new JwtService({});
-    const SECRET = 'test-secret';
-
-    function serviceWithRealJwt(): AuthService {
-      return new AuthService(
-        mockPrisma as unknown as PrismaService,
-        realJwt,
-        mockAuthConfig as unknown as AuthConfig,
-        mockMailService as unknown as MailService,
-        new TotpService(),
-      );
-    }
-
     it('rejects a normal access token presented as a pending-2FA token', async () => {
       const svc = serviceWithRealJwt();
       // Exactly what signAccessToken produces: a real, valid, signed session
@@ -457,6 +460,93 @@ describe('AuthService', () => {
       await expect(
         service.validateUser('test@test.com', 'password123'),
       ).resolves.toBeNull();
+    });
+  });
+
+  describe('stepUp()', () => {
+    it('mints a step-up token for the right password', async () => {
+      const svc = serviceWithRealJwt();
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+
+      const token = await svc.stepUp('ctest123', { password: 'password123' });
+
+      expect(realJwt.verify(token, { secret: 'test-secret' })).toMatchObject({
+        sub: 'ctest123',
+        purpose: STEP_UP_PURPOSE,
+      });
+    });
+
+    it('refuses a wrong password', async () => {
+      const svc = serviceWithRealJwt();
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+
+      await expect(
+        svc.stepUp('ctest123', { password: 'nope' }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('mints a step-up token for a valid TOTP code when 2FA is on', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+
+      const token = await svc.stepUp('ctest123', {
+        code: currentCode(secret),
+      });
+
+      expect(realJwt.verify(token, { secret: 'test-secret' })).toMatchObject({
+        purpose: STEP_UP_PURPOSE,
+      });
+    });
+
+    it('refuses a wrong code', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+
+      await expect(svc.stepUp('ctest123', { code: '000000' })).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    // Without 2FA there is no second factor to re-prove, so a code must not be
+    // an accepted answer — it would be checked against nothing.
+    it('refuses a code when the account has no 2FA enabled', async () => {
+      const svc = serviceWithRealJwt();
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+
+      await expect(svc.stepUp('ctest123', { code: '000000' })).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('refuses when neither factor is offered', async () => {
+      const svc = serviceWithRealJwt();
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
+
+      await expect(svc.stepUp('ctest123', {})).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('refuses a banned account even with the right password', async () => {
+      const svc = serviceWithRealJwt();
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: false,
+      });
+
+      await expect(
+        svc.stepUp('ctest123', { password: 'password123' }),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 

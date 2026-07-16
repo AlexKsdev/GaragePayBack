@@ -35,6 +35,8 @@ import {
   TwoFactorSetupResponseDto,
 } from './dto/two-factor.dto';
 import { PENDING_2FA_TTL_MS } from '../../config/totp.config';
+import { STEP_UP_TTL_MS } from '../../config/step-up.config';
+import { StepUpDto } from './dto/step-up.dto';
 import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { LocalGuard } from './guards/local.guard';
@@ -163,6 +165,24 @@ export class AuthController {
       authCookieOptions(REFRESH_TTL_MS),
     );
     return { ok: true };
+  }
+
+  /**
+   * Re-prove a factor to unlock destructive actions for the next few minutes.
+   * The proof is delivered as its own httpOnly cookie rather than in the body —
+   * nothing client-side needs to read it, and StepUpGuard is its only consumer.
+   */
+  @Post('step-up')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async stepUp(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: StepUpDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const token = await this.authService.stepUp(user.id, dto);
+    res.cookie(COOKIE_NAMES.stepUp, token, authCookieOptions(STEP_UP_TTL_MS));
   }
 
   @Post('2fa/setup')

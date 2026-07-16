@@ -18,6 +18,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { SkipCsrf } from '../../common/decorators/skip-csrf.decorator';
 import { AdminGuard } from '../../common/guards/admin.guard';
 import { JwtGuard } from '../../common/guards/jwt.guard';
+import { StepUpGuard } from '../../common/guards/step-up.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
@@ -89,8 +90,9 @@ export class PaymentsController {
     return this.paymentsService.findOne(user.id, id);
   }
 
+  // Moves money, so it needs a freshly re-proved factor on top of admin rights.
   @Patch(':id/status')
-  @UseGuards(JwtGuard, AdminGuard)
+  @UseGuards(JwtGuard, AdminGuard, StepUpGuard)
   updateStatus(
     @Param('id', ParseCuidPipe) id: string,
     @Body() dto: UpdatePaymentStatusDto,
