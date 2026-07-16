@@ -5,6 +5,7 @@ import {
   Get,
   Headers,
   HttpCode,
+  Ip,
   Param,
   Patch,
   Post,
@@ -94,7 +95,9 @@ export class PaymentsController {
   updateStatus(
     @Param('id', ParseCuidPipe) id: string,
     @Body() dto: UpdatePaymentStatusDto,
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Ip() ip: string,
   ): Promise<PaymentResponseDto> {
-    return this.paymentsService.updateStatus(id, dto);
+    return this.paymentsService.updateStatus(id, dto, user.id, ip);
   }
 }

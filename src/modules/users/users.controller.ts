@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Ip,
   Param,
   Patch,
   Post,
@@ -59,8 +60,9 @@ export class UsersController {
     @Param('id', ParseCuidPipe) id: string,
     @Body() dto: UpdateUserDto,
     @CurrentUser() user: AuthenticatedRequest['user'],
+    @Ip() ip: string,
   ): Promise<UserResponseDto> {
-    return this.usersService.update(user.id, id, dto);
+    return this.usersService.update(user.id, id, dto, ip);
   }
 
   @Delete(':id')
@@ -68,7 +70,8 @@ export class UsersController {
   async delete(
     @Param('id', ParseCuidPipe) id: string,
     @CurrentUser() user: AuthenticatedRequest['user'],
+    @Ip() ip: string,
   ): Promise<void> {
-    await this.usersService.delete(user.id, id);
+    await this.usersService.delete(user.id, id, ip);
   }
 }

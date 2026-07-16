@@ -24,11 +24,11 @@ enum Currency {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String @id @default(cuid())
+  email        String @unique
   passwordHash String
   name         String
-  role         Role     @default(USER)
+  role         Role   @default(USER)
 
   // Set false to ban: blocks login and refresh, and fails the admin check.
   // A live access token still works until it expires (<= 15 min).
@@ -53,30 +53,30 @@ model User {
   blocksPlaced    Int     @default(0)
   streak          Int     @default(0)
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  payments     Payment[]
-  refreshTokens RefreshToken[]
-  purchases    Purchase[]
+  payments            Payment[]
+  refreshTokens       RefreshToken[]
+  purchases           Purchase[]
   passwordResetTokens PasswordResetToken[]
 }
 
 model Product {
-  id        String   @id @default(cuid())
-  slug      String   @unique
-  category  String
-  name      String
-  emoji     String
-  rarity    String
-  rarityRank Int     @default(0) // Common=1 … Legendary=5, for rarity sorting
-  currency  Currency @default(COINS)
-  price     Int
-  badge     String?
-  stats     String[]
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  category   String
+  name       String
+  emoji      String
+  rarity     String
+  rarityRank Int      @default(0) // Common=1 … Legendary=5, for rarity sorting
+  currency   Currency @default(COINS)
+  price      Int
+  badge      String?
+  stats      String[]
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   purchases Purchase[]
 }
@@ -134,3 +134,37 @@ model Payment {
   user User @relation(fields: [userId], references: [id])
 }
 
+/// Forensic record of an admin acting on someone else's data. Append-only:
+/// nothing in the app updates or deletes a row here.
+model AdminAction {
+  id String @id @default(cuid())
+
+  /// Deliberately NOT a relation to User: the log has to outlive the accounts
+  /// it describes. A foreign key would either cascade the evidence away with
+  /// the actor or block their deletion outright.
+  actorId    String
+  action     AdminActionType
+  targetType String
+  targetId   String
+
+  /// What changed — e.g. the old and new value. Never secrets or password hashes.
+  metadata Json?
+
+  /// The address the request arrived from — today that is the frontend's /api
+  /// proxy, not the operator: Next's rewrite does not add x-forwarded-for, and
+  /// trusting the header would be worse than useless, since it passes a
+  /// client-supplied one straight through (verified 2026-07-16). Treat this as
+  /// the calling hop until a trusted proxy sets a forwarded header and Express
+  /// is configured with the matching `trust proxy` hop count.
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+}
+
+enum AdminActionType {
+  USER_UPDATE
+  USER_DELETE
+  PAYMENT_STATUS_UPDATE
+}
