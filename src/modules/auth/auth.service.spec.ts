@@ -13,6 +13,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
 import { TotpService } from './totp.service';
+import { AUTH_ERROR_CODES } from '../../config/error-codes.config';
 import { Secret, TOTP } from 'otpauth';
 
 /** Mints a genuine code the way an authenticator app would. */
@@ -387,6 +388,29 @@ describe('AuthService', () => {
         UnauthorizedException,
       );
       expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    // The client localizes off the code, so losing it silently reverts the
+    // message to English rather than failing loudly.
+    it('tags a wrong code with a machine-readable code the client can localize', async () => {
+      const svc = serviceWithRealJwt();
+      const secret = new TotpService().generateSecret();
+      const pending = svc.signPending2faToken('ctest123');
+
+      mockPrisma.client.user.findUnique.mockResolvedValue({
+        ...baseUser,
+        active: true,
+        totpEnabled: true,
+        totpSecret: secret,
+      });
+
+      const thrown = await svc
+        .verifyTwoFactorLogin(pending, '000000')
+        .catch((e: UnauthorizedException) => e);
+
+      expect((thrown as UnauthorizedException).getResponse()).toMatchObject({
+        code: AUTH_ERROR_CODES.invalidCode,
+      });
     });
 
     it('refuses a banned account', async () => {
