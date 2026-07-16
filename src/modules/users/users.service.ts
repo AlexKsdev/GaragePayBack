@@ -4,10 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AdminActionType } from '@prisma/client';
+import { AdminActionType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { PaginationDto } from '../../common/dto/pagination.dto';
 import { assertOwnerOrAdmin } from '../../common/ownership.util';
 import { AuditService } from '../audit/audit.service';
+import { PaginatedUsersResponseDto } from './dto/paginated-users-response.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { levelInfo, levelUpReward } from './level.util';
@@ -75,11 +77,46 @@ export class UsersService {
     return this.present(user);
   }
 
-  async findAll(): Promise<UserResponseDto[]> {
-    const users = await this.prisma.client.user.findMany({
-      select: USER_SELECT,
-    });
-    return users.map((user) => this.present(user));
+  /**
+   * One page of users for the admin table, optionally filtered by name or
+   * email. Admin-gated at the controller.
+   */
+  async findAll(
+    pagination: PaginationDto,
+    search?: string,
+  ): Promise<PaginatedUsersResponseDto> {
+    const where = this.searchFilter(search);
+
+    // The count runs against the same filter, or the pager would offer pages
+    // that don't exist.
+    const [users, total] = await Promise.all([
+      this.prisma.client.user.findMany({
+        where,
+        select: USER_SELECT,
+        skip: pagination.skip,
+        take: pagination.limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.client.user.count({ where }),
+    ]);
+
+    return {
+      items: users.map((user) => this.present(user)),
+      total,
+      page: pagination.page ?? 1,
+      limit: pagination.limit ?? 20,
+    };
+  }
+
+  private searchFilter(search?: string): Prisma.UserWhereInput {
+    const term = search?.trim();
+    if (!term) return {};
+    return {
+      OR: [
+        { name: { contains: term, mode: 'insensitive' } },
+        { email: { contains: term, mode: 'insensitive' } },
+      ],
+    };
   }
 
   /**

@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { AdminActionType, Role } from '@prisma/client';
+import { PaginationDto } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 
@@ -15,6 +16,7 @@ const mockPrisma = {
     user: {
       findUnique: jest.fn(),
       findMany: jest.fn(),
+      count: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
     },
@@ -111,6 +113,83 @@ describe('UsersService', () => {
         .mockResolvedValueOnce({ ...baseUser }); // target lookup
       const result = await service.findById('cadmin', 'ctest1');
       expect(result.email).toBe('user@test.com');
+    });
+  });
+
+  describe('findAll()', () => {
+    const pagination = { skip: 0, limit: 20, page: 1 } as PaginationDto;
+
+    beforeEach(() => {
+      mockPrisma.client.user.findMany.mockResolvedValue([{ ...baseUser }]);
+      mockPrisma.client.user.count.mockResolvedValue(1);
+    });
+
+    it('returns a page of users alongside the total, so a table can paginate', async () => {
+      mockPrisma.client.user.count.mockResolvedValue(57);
+
+      const result = await service.findAll(pagination);
+
+      expect(result.total).toBe(57);
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].email).toBe('user@test.com');
+    });
+
+    it('asks the database for one page, not the whole table', async () => {
+      await service.findAll({ skip: 40, limit: 20, page: 3 });
+
+      expect(mockPrisma.client.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 40, take: 20 }),
+      );
+    });
+
+    it('never selects the password hash or the TOTP secret', async () => {
+      await service.findAll(pagination);
+
+      const calls = mockPrisma.client.user.findMany.mock.calls as [
+        { select: Record<string, unknown> },
+      ][];
+      expect(calls[0][0].select.passwordHash).toBeUndefined();
+      expect(calls[0][0].select.totpSecret).toBeUndefined();
+    });
+
+    describe('search', () => {
+      it('matches on name or email, case-insensitively', async () => {
+        await service.findAll(pagination, 'Steve');
+
+        const where = {
+          OR: [
+            { name: { contains: 'Steve', mode: 'insensitive' } },
+            { email: { contains: 'Steve', mode: 'insensitive' } },
+          ],
+        };
+        expect(mockPrisma.client.user.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where }),
+        );
+        // The total has to reflect the same filter, or the pager promises
+        // pages that don't exist.
+        expect(mockPrisma.client.user.count).toHaveBeenCalledWith({ where });
+      });
+
+      it('filters nothing when no search term is given', async () => {
+        await service.findAll(pagination);
+
+        expect(mockPrisma.client.user.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: {} }),
+        );
+        expect(mockPrisma.client.user.count).toHaveBeenCalledWith({
+          where: {},
+        });
+      });
+
+      it('treats a blank search as no search', async () => {
+        await service.findAll(pagination, '   ');
+
+        expect(mockPrisma.client.user.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: {} }),
+        );
+      });
     });
   });
 
