@@ -24,6 +24,7 @@ import {
 } from '../../config/totp.config';
 import { TotpService } from './totp.service';
 import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
+import { STEP_UP_PURPOSE, STEP_UP_TTL_MS } from '../../config/step-up.config';
 
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -95,6 +96,59 @@ export class AuthService {
     // password was right.
     if (!user.active) return null;
     return user;
+  }
+
+  /**
+   * Re-proves one factor and mints the short-lived token that unlocks
+   * destructive actions. Accepts a TOTP code for accounts with 2FA on (every
+   * admin), the password otherwise.
+   *
+   * A code is refused outright when 2FA is off: there would be no secret to
+   * check it against, and silently falling back to "accepted" would make the
+   * guard decorative.
+   */
+  async stepUp(
+    userId: string,
+    factors: { password?: string; code?: string },
+  ): Promise<string> {
+    const user = await this.prisma.client.user.findUnique({
+      where: { id: userId },
+    });
+    // Same answer for a missing, banned or unproven account — no signal either.
+    if (!user || !user.active) {
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
+      );
+    }
+
+    const proven = await this.provesAFactor(user, factors);
+    if (!proven) {
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
+      );
+    }
+
+    return this.jwt.sign(
+      { sub: user.id, purpose: STEP_UP_PURPOSE },
+      {
+        secret: this.authConfig.jwtSecret,
+        expiresIn: Math.floor(STEP_UP_TTL_MS / 1000),
+      },
+    );
+  }
+
+  private async provesAFactor(
+    user: User,
+    factors: { password?: string; code?: string },
+  ): Promise<boolean> {
+    if (factors.code) {
+      if (!user.totpEnabled || !user.totpSecret) return false;
+      return this.totp.verify(factors.code, user.totpSecret);
+    }
+    if (factors.password) {
+      return bcrypt.compare(factors.password, user.passwordHash);
+    }
+    return false;
   }
 
   /**

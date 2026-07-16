@@ -14,6 +14,7 @@ import {
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminGuard } from '../../common/guards/admin.guard';
 import { JwtGuard } from '../../common/guards/jwt.guard';
+import { StepUpGuard } from '../../common/guards/step-up.guard';
 import { ParseCuidPipe } from '../../common/pipes/parse-cuid.pipe';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
 import { GrantXpDto } from './dto/grant-xp.dto';
@@ -65,7 +66,12 @@ export class UsersController {
     return this.usersService.update(user.id, id, dto, ip);
   }
 
+  // Irreversible, so a live session alone is not enough — the caller must have
+  // re-proved a factor in the last few minutes. This applies to owners deleting
+  // their own account too, which is the intent: account deletion should never
+  // ride on an unattended session.
   @Delete(':id')
+  @UseGuards(StepUpGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(
     @Param('id', ParseCuidPipe) id: string,

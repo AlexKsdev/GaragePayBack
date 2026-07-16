@@ -9,6 +9,10 @@ export const COOKIE_NAMES = {
   // /auth/2fa/verify. Deliberately a separate cookie from `access` — the JWT
   // strategy reads `access` alone, so this can never authenticate anything.
   pending2fa: 'pc_2fa',
+  // Proof that a factor was re-entered just now. Read only by StepUpGuard, and
+  // separate from `access` for the same reason as pending2fa: it grants no
+  // session on its own, it only unlocks destructive actions for a short while.
+  stepUp: 'pc_stepup',
 } as const;
 
 export const ACCESS_TTL_MS = 15 * 60 * 1000;
