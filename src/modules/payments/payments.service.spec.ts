@@ -5,16 +5,26 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentStatus, Role } from '@prisma/client';
+import { AdminActionType, PaymentStatus, Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { GEM_PACKS } from '../../config/gem-packs.config';
 import { STRIPE_CLIENT } from './stripe.provider';
+import { AuditService } from '../audit/audit.service';
 
 const mockTx = {
   payment: { findUnique: jest.fn(), update: jest.fn() },
   user: { update: jest.fn() },
+  adminAction: { create: jest.fn() },
 };
+
+/** The row the service wrote to the audit log, or undefined if it wrote none. */
+function auditRow(): Record<string, unknown> | undefined {
+  const calls = mockTx.adminAction.create.mock.calls as [
+    { data: Record<string, unknown> },
+  ][];
+  return calls.length ? calls[0][0].data : undefined;
+}
 
 const mockPrisma = {
   client: {
@@ -54,6 +64,9 @@ describe('PaymentsService', () => {
         PaymentsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: STRIPE_CLIENT, useValue: mockStripe },
+        // The real thing over a mock: these tests should fail if a status
+        // change stops being recorded.
+        AuditService,
       ],
     }).compile();
 
@@ -230,6 +243,52 @@ describe('PaymentsService', () => {
 
       expect(mockTx.payment.update).not.toHaveBeenCalled();
       expect(mockTx.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateStatus() audit log', () => {
+    // Admin-only endpoint that moves money — every call is recorded, with the
+    // before/after so an incident review can tell what actually changed.
+    it('records the status change with the actor and both values', async () => {
+      mockPrisma.client.payment.findUnique.mockResolvedValue({
+        id: 'cpay1',
+        status: PaymentStatus.PENDING,
+      });
+      mockTx.payment.update.mockResolvedValue({ id: 'cpay1' });
+
+      await service.updateStatus(
+        'cpay1',
+        { status: PaymentStatus.REFUNDED },
+        'cadmin',
+        '203.0.113.7',
+      );
+
+      expect(auditRow()).toMatchObject({
+        actorId: 'cadmin',
+        action: AdminActionType.PAYMENT_STATUS_UPDATE,
+        targetType: 'Payment',
+        targetId: 'cpay1',
+        metadata: { from: PaymentStatus.PENDING, to: PaymentStatus.REFUNDED },
+        ip: '203.0.113.7',
+      });
+    });
+
+    // Fail-closed: an unrecorded money movement must not stand.
+    it('rolls the status change back when the audit write fails', async () => {
+      mockPrisma.client.payment.findUnique.mockResolvedValue({
+        id: 'cpay1',
+        status: PaymentStatus.PENDING,
+      });
+      mockTx.payment.update.mockResolvedValue({ id: 'cpay1' });
+      mockTx.adminAction.create.mockRejectedValueOnce(new Error('log down'));
+
+      await expect(
+        service.updateStatus(
+          'cpay1',
+          { status: PaymentStatus.REFUNDED },
+          'cadmin',
+        ),
+      ).rejects.toThrow('log down');
     });
   });
 });

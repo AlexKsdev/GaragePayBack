@@ -4,8 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { AdminActionType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { assertOwnerOrAdmin } from '../../common/ownership.util';
+import { AuditService } from '../audit/audit.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { levelInfo, levelUpReward } from './level.util';
@@ -34,7 +36,10 @@ type UserRow = Omit<UserResponseDto, 'level' | 'xpNext'>;
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   /** Attach derived level/progress (from total xp) to a stored user row. */
   private present(user: UserRow): UserResponseDto {
@@ -112,6 +117,7 @@ export class UsersService {
     requestingUserId: string,
     targetId: string,
     dto: UpdateUserDto,
+    ip?: string,
   ): Promise<UserResponseDto> {
     // Authorize before the lookup so a non-owner cannot tell a real id from a
     // fake one by the 404-vs-403 response.
@@ -135,15 +141,43 @@ export class UsersService {
       if (taken) throw new ConflictException('Email already in use');
     }
 
-    const updated = await this.prisma.client.user.update({
-      where: { id: targetId },
-      data: dto,
-      select: USER_SELECT,
+    // One transaction, so an admin edit that cannot be recorded does not stand.
+    const updated = await this.prisma.client.$transaction(async (tx) => {
+      const row = await tx.user.update({
+        where: { id: targetId },
+        data: dto,
+        select: USER_SELECT,
+      });
+      await this.audit.recordIfActingOnAnother(
+        {
+          actorId: requestingUserId,
+          ownerId: targetId,
+          action: AdminActionType.USER_UPDATE,
+          targetType: 'User',
+          targetId,
+          // Enough to reconstruct the change without copying the whole row.
+          // Only the fields actually sent: a validated DTO carries the omitted
+          // ones as `undefined`, and naming those would overstate what changed.
+          metadata: {
+            changed: Object.entries(dto)
+              .filter(([, value]) => value !== undefined)
+              .map(([field]) => field),
+            email: dto.email ?? null,
+          },
+          ip,
+        },
+        tx,
+      );
+      return row;
     });
     return this.present(updated);
   }
 
-  async delete(requestingUserId: string, targetId: string): Promise<void> {
+  async delete(
+    requestingUserId: string,
+    targetId: string,
+    ip?: string,
+  ): Promise<void> {
     // Authorize before the lookup so a non-owner cannot tell a real id from a
     // fake one by the 404-vs-403 response.
     await assertOwnerOrAdmin(
@@ -159,6 +193,21 @@ export class UsersService {
     });
     if (!target) throw new NotFoundException('User not found');
 
-    await this.prisma.client.user.delete({ where: { id: targetId } });
+    await this.prisma.client.$transaction(async (tx) => {
+      // Recorded before the row goes: afterwards there is nothing left to
+      // describe, and the log has to outlive the account (hence no FK on actorId).
+      await this.audit.recordIfActingOnAnother(
+        {
+          actorId: requestingUserId,
+          ownerId: targetId,
+          action: AdminActionType.USER_DELETE,
+          targetType: 'User',
+          targetId,
+          ip,
+        },
+        tx,
+      );
+      await tx.user.delete({ where: { id: targetId } });
+    });
   }
 }

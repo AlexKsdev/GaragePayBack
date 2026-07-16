@@ -5,11 +5,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentStatus } from '@prisma/client';
+import { AdminActionType, PaymentStatus } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { assertOwnerOrAdmin, isAdmin } from '../../common/ownership.util';
+import { AuditService } from '../audit/audit.service';
 import { frontendBaseUrl } from '../../config/frontend.config';
 import {
   findGemPack,
@@ -41,6 +42,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
+    private readonly audit: AuditService,
   ) {}
 
   getGemPacks(): GemPack[] {
@@ -192,16 +194,35 @@ export class PaymentsService {
   async updateStatus(
     paymentId: string,
     dto: UpdatePaymentStatusDto,
+    actorId: string,
+    ip?: string,
   ): Promise<PaymentResponseDto> {
     const payment = await this.prisma.client.payment.findUnique({
       where: { id: paymentId },
     });
     if (!payment) throw new NotFoundException('Payment not found');
 
-    return this.prisma.client.payment.update({
-      where: { id: paymentId },
-      data: dto,
-      select: PAYMENT_SELECT,
+    // Admin-only endpoint, so every call is an admin action — and one that
+    // moves money, hence the unconditional record. One transaction: a status
+    // change that cannot be logged does not stand.
+    return this.prisma.client.$transaction(async (tx) => {
+      const updated = await tx.payment.update({
+        where: { id: paymentId },
+        data: dto,
+        select: PAYMENT_SELECT,
+      });
+      await this.audit.record(
+        {
+          actorId,
+          action: AdminActionType.PAYMENT_STATUS_UPDATE,
+          targetType: 'Payment',
+          targetId: paymentId,
+          metadata: { from: payment.status, to: dto.status },
+          ip,
+        },
+        tx,
+      );
+      return updated;
     });
   }
 }
