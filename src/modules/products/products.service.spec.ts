@@ -317,6 +317,40 @@ describe('ProductsService', () => {
       expect(auditRow()?.metadata).toMatchObject({ changed: ['price'] });
     });
 
+    // An edit form posts the whole object, so most fields arrive defined but
+    // identical. Naming them would have the log claim nine changes for one.
+    it('names only the fields whose value actually differs', async () => {
+      await service.update('cadmin', 'cprod1', {
+        slug: coinProduct.slug,
+        name: coinProduct.name,
+        emoji: coinProduct.emoji,
+        currency: coinProduct.currency,
+        price: 900,
+      });
+
+      expect(auditRow()?.metadata).toMatchObject({ changed: ['price'] });
+    });
+
+    it('compares array fields by value, not by reference', async () => {
+      mockPrisma.client.product.findUnique.mockResolvedValue({
+        ...coinProduct,
+        stats: ['+5 damage'],
+      });
+
+      await service.update('cadmin', 'cprod1', {
+        stats: ['+5 damage'],
+        price: 900,
+      });
+
+      expect(auditRow()?.metadata).toMatchObject({ changed: ['price'] });
+    });
+
+    it('records nothing changed when the values all match', async () => {
+      await service.update('cadmin', 'cprod1', { price: coinProduct.price });
+
+      expect(auditRow()?.metadata).toMatchObject({ changed: [] });
+    });
+
     it('throws NotFoundException for an unknown product', async () => {
       mockPrisma.client.product.findUnique.mockResolvedValue(null);
       await expect(

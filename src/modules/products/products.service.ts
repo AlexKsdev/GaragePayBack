@@ -54,6 +54,16 @@ const ADMIN_PRODUCT_SELECT = {
   rarityRank: true,
 } as const;
 
+/** `stats` is an array, so a reference compare would call every edit a change. */
+function sameValue(next: unknown, current: unknown): boolean {
+  if (Array.isArray(next) && Array.isArray(current)) {
+    return (
+      next.length === current.length && next.every((v, i) => v === current[i])
+    );
+  }
+  return next === current;
+}
+
 @Injectable()
 export class ProductsService {
   constructor(
@@ -142,10 +152,14 @@ export class ProductsService {
       if (clash) throw new ConflictException('Slug already in use');
     }
 
-    // Only what was actually sent: a validated DTO carries the untouched fields
-    // as `undefined`, and naming those would overstate what changed.
+    // Only what actually moved. An edit form posts the whole object, so most
+    // fields arrive defined but identical — filtering on `undefined` alone
+    // would have the log claim nine changes for a single price edit.
     const changed = Object.entries(dto)
-      .filter(([, value]) => value !== undefined)
+      .filter(([field, value]) => {
+        if (value === undefined) return false;
+        return !sameValue(value, (current as Record<string, unknown>)[field]);
+      })
       .map(([field]) => field);
 
     return this.prisma.client.$transaction(async (tx) => {
