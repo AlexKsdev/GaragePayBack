@@ -388,6 +388,52 @@ describe('ProductsService', () => {
     });
   });
 
+  describe('activate()', () => {
+    // Without this there is no way back: DELETE deactivates, and `active` is
+    // deliberately not editable through update(), so a product taken off the
+    // shop could only be restored by editing the database by hand.
+    it('puts a deactivated product back on the shop', async () => {
+      mockPrisma.client.product.findUnique.mockResolvedValue({
+        ...coinProduct,
+        active: false,
+      });
+      mockTx.product.update.mockResolvedValue({ ...coinProduct, active: true });
+
+      const result = await service.activate('cadmin', 'cprod1', '203.0.113.7');
+
+      expect(result.active).toBe(true);
+      expect(mockTx.product.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { active: true } }),
+      );
+      expect(auditRow()).toMatchObject({
+        actorId: 'cadmin',
+        action: AdminActionType.PRODUCT_UPDATE,
+        targetId: 'cprod1',
+        metadata: { changed: ['active'], active: { from: false, to: true } },
+        ip: '203.0.113.7',
+      });
+    });
+
+    it('throws NotFoundException for an unknown product', async () => {
+      mockPrisma.client.product.findUnique.mockResolvedValue(null);
+      await expect(service.activate('cadmin', 'cghost')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('rolls back when the audit write fails', async () => {
+      mockPrisma.client.product.findUnique.mockResolvedValue({
+        ...coinProduct,
+        active: false,
+      });
+      mockTx.adminAction.create.mockRejectedValueOnce(new Error('log down'));
+
+      await expect(service.activate('cadmin', 'cprod1')).rejects.toThrow(
+        'log down',
+      );
+    });
+  });
+
   describe('findAllForAdmin()', () => {
     // The admin has to see what they deactivated, or removal is one-way from
     // the panel.

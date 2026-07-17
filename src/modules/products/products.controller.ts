@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Ip,
   Param,
   Patch,
@@ -79,6 +81,18 @@ export class ProductsController {
     @Ip() ip: string,
   ): Promise<AdminProductDto> {
     return this.productsService.update(user.id, id, dto, ip);
+  }
+
+  /** The way back from DELETE; see ProductsService.activate. */
+  @Post(':id/activate')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtGuard, AdminGuard, StepUpGuard)
+  activate(
+    @Param('id', ParseCuidPipe) id: string,
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Ip() ip: string,
+  ): Promise<AdminProductDto> {
+    return this.productsService.activate(user.id, id, ip);
   }
 
   /** Takes the product off the shop; see ProductsService.deactivate. */

@@ -177,6 +177,50 @@ export class ProductsService {
   }
 
   /**
+   * Puts a deactivated product back on the shop — the way back from
+   * `deactivate()`. It needs its own endpoint because `active` is deliberately
+   * not editable through `update()`: leaving it there would let a quiet field
+   * edit take a product off the shop while the log said PRODUCT_UPDATE.
+   *
+   * Recorded as an update (there is no ACTIVATE action) with the flag's
+   * before/after spelled out, so the movement is still readable.
+   */
+  async activate(
+    actorId: string,
+    id: string,
+    ip?: string,
+  ): Promise<AdminProductDto> {
+    const current = await this.prisma.client.product.findUnique({
+      where: { id },
+      select: { active: true },
+    });
+    if (!current) throw new NotFoundException('Product not found');
+
+    return this.prisma.client.$transaction(async (tx) => {
+      const product = await tx.product.update({
+        where: { id },
+        data: { active: true },
+        select: ADMIN_PRODUCT_SELECT,
+      });
+      await this.audit.record(
+        {
+          actorId,
+          action: AdminActionType.PRODUCT_UPDATE,
+          targetType: 'Product',
+          targetId: id,
+          metadata: {
+            changed: ['active'],
+            active: { from: current.active, to: true },
+          },
+          ip,
+        },
+        tx,
+      );
+      return product;
+    });
+  }
+
+  /**
    * Takes a product off the shop. Deliberately not a delete: `Purchase.product`
    * has no cascade, so removing a purchased product fails on the foreign key —
    * and the history must keep pointing at what was actually bought. The shop
