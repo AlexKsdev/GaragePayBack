@@ -169,4 +169,10 @@ enum AdminActionType {
   USER_ROLE_CHANGE
   USER_BALANCE_CHANGE
   PAYMENT_STATUS_UPDATE
+  PRODUCT_CREATE
+  PRODUCT_UPDATE
+  // Not a deletion: `Purchase.product` has no cascade, and purchase history must
+  // keep pointing at what was actually bought. `active: false` is what removal
+  // from the shop means — and it is reversible.
+  PRODUCT_DEACTIVATE
 }
