@@ -29,7 +29,7 @@ export class AdminService {
             amount: true,
             status: true,
             createdAt: true,
-            userId: true,
+            user: { select: { name: true } },
           },
         }),
       ]);
@@ -40,7 +40,14 @@ export class AdminService {
       totalProducts,
       // Prisma sums to null on an empty set.
       revenueCents: revenue._sum.amount ?? 0,
-      recentPayments,
+      // Flatten the buyer to a name — the table shows the nickname, not the id.
+      recentPayments: recentPayments.map((p) => ({
+        id: p.id,
+        amount: p.amount,
+        status: p.status,
+        createdAt: p.createdAt,
+        userName: p.user.name,
+      })),
     };
   }
 }
