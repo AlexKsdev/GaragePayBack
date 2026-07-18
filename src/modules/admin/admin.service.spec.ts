@@ -33,16 +33,17 @@ describe('AdminService', () => {
     mockPrisma.client.payment.aggregate.mockResolvedValue({
       _sum: { amount: 12345 },
     });
-    const recent = [
+    const createdAt = new Date();
+    // Prisma returns the buyer via the relation; the DTO flattens it to a name.
+    mockPrisma.client.payment.findMany.mockResolvedValue([
       {
         id: 'p1',
         amount: 999,
         status: PaymentStatus.SUCCEEDED,
-        createdAt: new Date(),
-        userId: 'u1',
+        createdAt,
+        user: { name: 'Steve_PureCraft' },
       },
-    ];
-    mockPrisma.client.payment.findMany.mockResolvedValue(recent);
+    ]);
 
     const stats = await service.getStats();
 
@@ -50,7 +51,27 @@ describe('AdminService', () => {
     expect(stats.totalAdmins).toBe(3);
     expect(stats.totalProducts).toBe(30);
     expect(stats.revenueCents).toBe(12345);
-    expect(stats.recentPayments).toEqual(recent);
+    // The dashboard shows the nickname, not the raw user id.
+    expect(stats.recentPayments).toEqual([
+      {
+        id: 'p1',
+        amount: 999,
+        status: PaymentStatus.SUCCEEDED,
+        createdAt,
+        userName: 'Steve_PureCraft',
+      },
+    ]);
+    expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: {
+          id: true,
+          amount: true,
+          status: true,
+          createdAt: true,
+          user: { select: { name: true } },
+        },
+      }),
+    );
     expect(mockPrisma.client.user.count).toHaveBeenNthCalledWith(2, {
       where: { role: Role.ADMIN },
     });

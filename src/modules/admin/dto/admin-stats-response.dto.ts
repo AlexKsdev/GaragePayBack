@@ -3,7 +3,7 @@ export interface RecentPayment {
   amount: number;
   status: string;
   createdAt: Date;
-  userId: string;
+  userName: string;
 }
 
 /** Read-only dashboard figures. Nothing here is a secret, but nothing here is
