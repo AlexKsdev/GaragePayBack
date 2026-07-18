@@ -6,7 +6,7 @@ import {
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Role, type User } from '@prisma/client';
+import { Role, TwoFactorMethod, type User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -72,6 +72,7 @@ const mockAuthConfig = {
 
 const mockMailService = {
   sendPasswordReset: jest.fn(),
+  sendTwoFactorCode: jest.fn(),
 };
 
 const baseUser = {
@@ -431,6 +432,103 @@ describe('AuthService', () => {
       await expect(
         svc.verifyTwoFactorLogin(pending, currentCode(secret)),
       ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('email two-factor', () => {
+    const emailUser = {
+      ...baseUser,
+      active: true,
+      totpEnabled: true,
+      totpSecret: null,
+      twoFactorMethod: TwoFactorMethod.EMAIL,
+    };
+
+    // The code the service handed to the mailer on the most recent send.
+    function emailedCode(): string {
+      const calls = mockMailService.sendTwoFactorCode.mock.calls as [
+        string,
+        string,
+      ][];
+      return calls[calls.length - 1][1];
+    }
+
+    describe('startTwoFactorLogin()', () => {
+      it('emails a 6-digit code for the EMAIL method and returns a pending token', async () => {
+        const svc = serviceWithRealJwt();
+        const token = await svc.startTwoFactorLogin(emailUser as User);
+
+        expect(mockMailService.sendTwoFactorCode).toHaveBeenCalledWith(
+          emailUser.email,
+          expect.stringMatching(/^\d{6}$/),
+        );
+        const payload = realJwt.verify<{ purpose: string; sub: string }>(
+          token,
+          {
+            secret: SECRET,
+          },
+        );
+        expect(payload.purpose).toBe('2fa');
+        expect(payload.sub).toBe(emailUser.id);
+      });
+
+      it('does not email anything for the TOTP method', async () => {
+        const svc = serviceWithRealJwt();
+        const totpUser = {
+          ...baseUser,
+          totpEnabled: true,
+          totpSecret: 'SECRET',
+          twoFactorMethod: TwoFactorMethod.TOTP,
+        };
+        await svc.startTwoFactorLogin(totpUser as User);
+        expect(mockMailService.sendTwoFactorCode).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('verifyTwoFactorLogin() — email method', () => {
+      it('completes the login for the emailed code', async () => {
+        const svc = serviceWithRealJwt();
+        const token = await svc.startTwoFactorLogin(emailUser as User);
+        const code = emailedCode();
+
+        mockPrisma.client.user.findUnique.mockResolvedValue(emailUser);
+        mockPrisma.client.refreshToken.create.mockResolvedValue({});
+
+        const result = await svc.verifyTwoFactorLogin(token, code);
+        expect(result.user.email).toBe(emailUser.email);
+        expect(result.refreshToken).toMatch(/^[0-9a-f]{96}$/);
+      });
+
+      it('rejects a wrong emailed code, tagged invalidCode', async () => {
+        const svc = serviceWithRealJwt();
+        const token = await svc.startTwoFactorLogin(emailUser as User);
+        mockPrisma.client.user.findUnique.mockResolvedValue(emailUser);
+
+        const thrown = await svc
+          .verifyTwoFactorLogin(token, '000000')
+          .catch((e: UnauthorizedException) => e);
+
+        expect(thrown).toBeInstanceOf(UnauthorizedException);
+        expect((thrown as UnauthorizedException).getResponse()).toMatchObject({
+          code: AUTH_ERROR_CODES.invalidCode,
+        });
+        expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('resendTwoFactorCode()', () => {
+      it('emails a fresh code that verifies against the reissued token', async () => {
+        const svc = serviceWithRealJwt();
+        const first = await svc.startTwoFactorLogin(emailUser as User);
+        mockPrisma.client.user.findUnique.mockResolvedValue(emailUser);
+
+        const second = await svc.resendTwoFactorCode(first);
+        const code = emailedCode();
+
+        mockPrisma.client.refreshToken.create.mockResolvedValue({});
+        const result = await svc.verifyTwoFactorLogin(second, code);
+        expect(result.user.email).toBe(emailUser.email);
+      });
     });
   });
 
