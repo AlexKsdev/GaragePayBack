@@ -6,25 +6,14 @@ import {
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Role, TwoFactorMethod, type User } from '@prisma/client';
+import { Role, type User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
-import { TotpService } from './totp.service';
 import { AUTH_ERROR_CODES } from '../../config/error-codes.config';
 import { STEP_UP_PURPOSE } from '../../config/step-up.config';
-import { Secret, TOTP } from 'otpauth';
-
-/** Mints a genuine code the way an authenticator app would. */
-function currentCode(base32: string): string {
-  return new TOTP({
-    issuer: 'PureCraft',
-    label: 'PureCraft',
-    secret: Secret.fromBase32(base32),
-  }).generate();
-}
 
 const mockPrisma = {
   client: {
@@ -81,8 +70,7 @@ const baseUser = {
   name: 'Test User',
   role: Role.USER,
   active: true,
-  totpEnabled: false,
-  totpSecret: null as string | null,
+  twoFactorEnabled: false,
   passwordHash: '',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -102,7 +90,6 @@ describe('AuthService', () => {
       realJwt,
       mockAuthConfig as unknown as AuthConfig,
       mockMailService as unknown as MailService,
-      new TotpService(),
     );
   }
 
@@ -119,7 +106,6 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: mockJwt },
         { provide: AuthConfig, useValue: mockAuthConfig },
         { provide: MailService, useValue: mockMailService },
-        TotpService,
       ],
     }).compile();
 
@@ -354,95 +340,10 @@ describe('AuthService', () => {
         UnauthorizedException,
       );
     });
-
-    it('completes the login for a valid pending token + code', async () => {
-      const svc = serviceWithRealJwt();
-      const secret = new TotpService().generateSecret();
-      const pending = svc.signPending2faToken('ctest123');
-
-      mockPrisma.client.user.findUnique.mockResolvedValue({
-        ...baseUser,
-        active: true,
-        totpEnabled: true,
-        totpSecret: secret,
-      });
-      mockPrisma.client.refreshToken.create.mockResolvedValue({});
-
-      const result = await svc.verifyTwoFactorLogin(
-        pending,
-        currentCode(secret),
-      );
-      expect(result.user.email).toBe(baseUser.email);
-      expect(result.refreshToken).toMatch(/^[0-9a-f]{96}$/);
-    });
-
-    it('rejects a wrong code even with a valid pending token', async () => {
-      const svc = serviceWithRealJwt();
-      const secret = new TotpService().generateSecret();
-      const pending = svc.signPending2faToken('ctest123');
-
-      mockPrisma.client.user.findUnique.mockResolvedValue({
-        ...baseUser,
-        active: true,
-        totpEnabled: true,
-        totpSecret: secret,
-      });
-
-      await expect(svc.verifyTwoFactorLogin(pending, '000000')).rejects.toThrow(
-        UnauthorizedException,
-      );
-      expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
-    });
-
-    // The client localizes off the code, so losing it silently reverts the
-    // message to English rather than failing loudly.
-    it('tags a wrong code with a machine-readable code the client can localize', async () => {
-      const svc = serviceWithRealJwt();
-      const secret = new TotpService().generateSecret();
-      const pending = svc.signPending2faToken('ctest123');
-
-      mockPrisma.client.user.findUnique.mockResolvedValue({
-        ...baseUser,
-        active: true,
-        totpEnabled: true,
-        totpSecret: secret,
-      });
-
-      const thrown = await svc
-        .verifyTwoFactorLogin(pending, '000000')
-        .catch((e: UnauthorizedException) => e);
-
-      expect((thrown as UnauthorizedException).getResponse()).toMatchObject({
-        code: AUTH_ERROR_CODES.invalidCode,
-      });
-    });
-
-    it('refuses a banned account', async () => {
-      const svc = serviceWithRealJwt();
-      const secret = new TotpService().generateSecret();
-      const pending = svc.signPending2faToken('ctest123');
-
-      mockPrisma.client.user.findUnique.mockResolvedValue({
-        ...baseUser,
-        active: false,
-        totpEnabled: true,
-        totpSecret: secret,
-      });
-
-      await expect(
-        svc.verifyTwoFactorLogin(pending, currentCode(secret)),
-      ).rejects.toThrow(UnauthorizedException);
-    });
   });
 
   describe('email two-factor', () => {
-    const emailUser = {
-      ...baseUser,
-      active: true,
-      totpEnabled: true,
-      totpSecret: null,
-      twoFactorMethod: TwoFactorMethod.EMAIL,
-    };
+    const emailUser = { ...baseUser, active: true, twoFactorEnabled: true };
 
     // The code the service handed to the mailer on the most recent send.
     function emailedCode(): string {
@@ -454,7 +355,7 @@ describe('AuthService', () => {
     }
 
     describe('startTwoFactorLogin()', () => {
-      it('emails a 6-digit code for the EMAIL method and returns a pending token', async () => {
+      it('emails a 6-digit code and returns a pending token', async () => {
         const svc = serviceWithRealJwt();
         const token = await svc.startTwoFactorLogin(emailUser as User);
 
@@ -464,28 +365,14 @@ describe('AuthService', () => {
         );
         const payload = realJwt.verify<{ purpose: string; sub: string }>(
           token,
-          {
-            secret: SECRET,
-          },
+          { secret: SECRET },
         );
         expect(payload.purpose).toBe('2fa');
         expect(payload.sub).toBe(emailUser.id);
       });
-
-      it('does not email anything for the TOTP method', async () => {
-        const svc = serviceWithRealJwt();
-        const totpUser = {
-          ...baseUser,
-          totpEnabled: true,
-          totpSecret: 'SECRET',
-          twoFactorMethod: TwoFactorMethod.TOTP,
-        };
-        await svc.startTwoFactorLogin(totpUser as User);
-        expect(mockMailService.sendTwoFactorCode).not.toHaveBeenCalled();
-      });
     });
 
-    describe('verifyTwoFactorLogin() — email method', () => {
+    describe('verifyTwoFactorLogin()', () => {
       it('completes the login for the emailed code', async () => {
         const svc = serviceWithRealJwt();
         const token = await svc.startTwoFactorLogin(emailUser as User);
@@ -514,6 +401,19 @@ describe('AuthService', () => {
         });
         expect(mockPrisma.client.refreshToken.create).not.toHaveBeenCalled();
       });
+
+      it('refuses a banned account', async () => {
+        const svc = serviceWithRealJwt();
+        const token = await svc.startTwoFactorLogin(emailUser as User);
+        const code = emailedCode();
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          ...emailUser,
+          active: false,
+        });
+        await expect(svc.verifyTwoFactorLogin(token, code)).rejects.toThrow(
+          UnauthorizedException,
+        );
+      });
     });
 
     describe('resendTwoFactorCode()', () => {
@@ -533,17 +433,17 @@ describe('AuthService', () => {
   });
 
   describe('login() user payload', () => {
-    it('surfaces totpEnabled so the client can render the real 2FA state', async () => {
+    it('surfaces twoFactorEnabled so the client can render the real 2FA state', async () => {
       mockPrisma.client.refreshToken.create.mockResolvedValue({
         token: 'refresh-token',
       });
 
       const result = await service.login({
         ...baseUser,
-        totpEnabled: true,
+        twoFactorEnabled: true,
       } as unknown as User);
 
-      expect(result.user.totpEnabled).toBe(true);
+      expect(result.user.twoFactorEnabled).toBe(true);
     });
   });
 
@@ -566,7 +466,7 @@ describe('AuthService', () => {
       const svc = serviceWithRealJwt();
       mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
 
-      const token = await svc.stepUp('ctest123', { password: 'password123' });
+      const token = await svc.stepUp('ctest123', 'password123');
 
       expect(realJwt.verify(token, { secret: 'test-secret' })).toMatchObject({
         sub: 'ctest123',
@@ -578,59 +478,7 @@ describe('AuthService', () => {
       const svc = serviceWithRealJwt();
       mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
 
-      await expect(
-        svc.stepUp('ctest123', { password: 'nope' }),
-      ).rejects.toThrow(UnauthorizedException);
-    });
-
-    it('mints a step-up token for a valid TOTP code when 2FA is on', async () => {
-      const svc = serviceWithRealJwt();
-      const secret = new TotpService().generateSecret();
-      mockPrisma.client.user.findUnique.mockResolvedValue({
-        ...baseUser,
-        totpEnabled: true,
-        totpSecret: secret,
-      });
-
-      const token = await svc.stepUp('ctest123', {
-        code: currentCode(secret),
-      });
-
-      expect(realJwt.verify(token, { secret: 'test-secret' })).toMatchObject({
-        purpose: STEP_UP_PURPOSE,
-      });
-    });
-
-    it('refuses a wrong code', async () => {
-      const svc = serviceWithRealJwt();
-      const secret = new TotpService().generateSecret();
-      mockPrisma.client.user.findUnique.mockResolvedValue({
-        ...baseUser,
-        totpEnabled: true,
-        totpSecret: secret,
-      });
-
-      await expect(svc.stepUp('ctest123', { code: '000000' })).rejects.toThrow(
-        UnauthorizedException,
-      );
-    });
-
-    // Without 2FA there is no second factor to re-prove, so a code must not be
-    // an accepted answer — it would be checked against nothing.
-    it('refuses a code when the account has no 2FA enabled', async () => {
-      const svc = serviceWithRealJwt();
-      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
-
-      await expect(svc.stepUp('ctest123', { code: '000000' })).rejects.toThrow(
-        UnauthorizedException,
-      );
-    });
-
-    it('refuses when neither factor is offered', async () => {
-      const svc = serviceWithRealJwt();
-      mockPrisma.client.user.findUnique.mockResolvedValue({ ...baseUser });
-
-      await expect(svc.stepUp('ctest123', {})).rejects.toThrow(
+      await expect(svc.stepUp('ctest123', 'nope')).rejects.toThrow(
         UnauthorizedException,
       );
     });
@@ -642,130 +490,148 @@ describe('AuthService', () => {
         active: false,
       });
 
-      await expect(
-        svc.stepUp('ctest123', { password: 'password123' }),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(svc.stepUp('ctest123', 'password123')).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
   });
 
-  describe('two-factor enrolment', () => {
+  describe('two-factor enrolment (email)', () => {
+    function emailedCode(): string {
+      const calls = mockMailService.sendTwoFactorCode.mock.calls as [
+        string,
+        string,
+      ][];
+      return calls[calls.length - 1][1];
+    }
+
     describe('setupTwoFactor()', () => {
-      it('stores a secret but leaves 2FA off until a code is proven', async () => {
+      it('emails a confirmation code and returns a token, without enabling yet', async () => {
+        const svc = serviceWithRealJwt();
         mockPrisma.client.user.findUnique.mockResolvedValue({
           email: 'a@b.com',
-          totpEnabled: false,
+          twoFactorEnabled: false,
         });
-        mockPrisma.client.user.update.mockResolvedValue({});
 
-        const result = await service.setupTwoFactor('ctest123');
+        const token = await svc.setupTwoFactor('ctest123');
 
-        expect(result.otpauthUrl).toContain('otpauth://totp/');
-        expect(result.qrDataUrl.startsWith('data:image/png;base64,')).toBe(
-          true,
+        expect(mockMailService.sendTwoFactorCode).toHaveBeenCalledWith(
+          'a@b.com',
+          expect.stringMatching(/^\d{6}$/),
         );
-        const updateCalls = mockPrisma.client.user.update.mock.calls;
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        const call = updateCalls[0][0] as {
-          data: { totpSecret: string; totpEnabled?: boolean };
-        };
-        expect(call.data.totpSecret).toMatch(/^[A-Z2-7]+$/);
-        // Crucially NOT enabled yet — a mis-scanned QR must not lock the user out.
-        expect(call.data.totpEnabled).toBeUndefined();
+        // Not enabled until the emailed code is confirmed.
+        expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+        const payload = realJwt.verify<{ purpose: string }>(token, {
+          secret: SECRET,
+        });
+        expect(payload.purpose).toBe('2fa-enable');
       });
 
-      it('refuses to re-issue a secret while 2FA is already on', async () => {
+      it('refuses while 2FA is already on', async () => {
+        const svc = serviceWithRealJwt();
         mockPrisma.client.user.findUnique.mockResolvedValue({
           email: 'a@b.com',
-          totpEnabled: true,
+          twoFactorEnabled: true,
         });
-        // Otherwise a hijacked session could swap in the attacker's own secret.
-        await expect(service.setupTwoFactor('ctest123')).rejects.toThrow(
+        await expect(svc.setupTwoFactor('ctest123')).rejects.toThrow(
           BadRequestException,
         );
-        expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+        expect(mockMailService.sendTwoFactorCode).not.toHaveBeenCalled();
       });
     });
 
     describe('enableTwoFactor()', () => {
-      it('turns 2FA on for a valid code', async () => {
-        const secret = new TotpService().generateSecret();
+      async function tokenFor(userId: string): Promise<string> {
+        const svc = serviceWithRealJwt();
         mockPrisma.client.user.findUnique.mockResolvedValue({
-          totpSecret: secret,
-          totpEnabled: false,
+          email: 'a@b.com',
+          twoFactorEnabled: false,
         });
+        return svc.setupTwoFactor(userId);
+      }
+
+      it('turns 2FA on for the emailed code', async () => {
+        const token = await tokenFor('ctest123');
+        const code = emailedCode();
         mockPrisma.client.user.update.mockResolvedValue({});
 
-        await service.enableTwoFactor('ctest123', currentCode(secret));
+        const svc = serviceWithRealJwt();
+        await svc.enableTwoFactor('ctest123', code, token);
 
         expect(mockPrisma.client.user.update).toHaveBeenCalledWith({
           where: { id: 'ctest123' },
-          data: { totpEnabled: true },
+          data: { twoFactorEnabled: true },
         });
       });
 
       it('rejects a wrong code and leaves 2FA off', async () => {
-        const secret = new TotpService().generateSecret();
-        mockPrisma.client.user.findUnique.mockResolvedValue({
-          totpSecret: secret,
-          totpEnabled: false,
-        });
+        const token = await tokenFor('ctest123');
+        const svc = serviceWithRealJwt();
         await expect(
-          service.enableTwoFactor('ctest123', '000000'),
+          svc.enableTwoFactor('ctest123', '000000', token),
         ).rejects.toThrow(BadRequestException);
         expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
       });
 
-      it('rejects enabling before setup has run', async () => {
-        mockPrisma.client.user.findUnique.mockResolvedValue({
-          totpSecret: null,
-          totpEnabled: false,
-        });
+      it('rejects enabling without a pending action token', async () => {
+        const svc = serviceWithRealJwt();
         await expect(
-          service.enableTwoFactor('ctest123', '123456'),
+          svc.enableTwoFactor('ctest123', '123456', undefined),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      // A code emailed to one account cannot be redeemed while signed in as another.
+      it('rejects a token minted for a different user', async () => {
+        const token = await tokenFor('cother');
+        const code = emailedCode();
+        const svc = serviceWithRealJwt();
+        await expect(
+          svc.enableTwoFactor('ctest123', code, token),
         ).rejects.toThrow(BadRequestException);
       });
     });
 
     describe('disableTwoFactor()', () => {
-      const secret = new TotpService().generateSecret();
-
-      function enrolledUser() {
-        return {
+      async function disableToken(): Promise<string> {
+        const svc = serviceWithRealJwt();
+        mockPrisma.client.user.findUnique.mockResolvedValue({
+          email: 'a@b.com',
+          twoFactorEnabled: true,
           passwordHash: baseUser.passwordHash,
-          totpSecret: secret,
-          totpEnabled: true,
-        };
+        });
+        return svc.requestDisableCode('ctest123');
       }
 
-      it('clears the secret when password and code both check out', async () => {
-        mockPrisma.client.user.findUnique.mockResolvedValue(enrolledUser());
+      it('turns 2FA off when password and emailed code both check out', async () => {
+        const token = await disableToken();
+        const code = emailedCode();
         mockPrisma.client.user.update.mockResolvedValue({});
 
-        await service.disableTwoFactor(
-          'ctest123',
-          'password123',
-          currentCode(secret),
-        );
+        const svc = serviceWithRealJwt();
+        await svc.disableTwoFactor('ctest123', 'password123', code, token);
 
         expect(mockPrisma.client.user.update).toHaveBeenCalledWith({
           where: { id: 'ctest123' },
-          data: { totpEnabled: false, totpSecret: null },
+          data: { twoFactorEnabled: false },
         });
       });
 
       it('refuses on a wrong password even with a valid code', async () => {
-        mockPrisma.client.user.findUnique.mockResolvedValue(enrolledUser());
+        const token = await disableToken();
+        const code = emailedCode();
+        const svc = serviceWithRealJwt();
         await expect(
-          service.disableTwoFactor('ctest123', 'wrong', currentCode(secret)),
+          svc.disableTwoFactor('ctest123', 'wrong', code, token),
         ).rejects.toThrow(UnauthorizedException);
         expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
       });
 
-      it('refuses on a wrong code even with the right password — a hijacked session alone cannot strip 2FA', async () => {
-        mockPrisma.client.user.findUnique.mockResolvedValue(enrolledUser());
+      it('refuses on a wrong code even with the right password', async () => {
+        const token = await disableToken();
+        const svc = serviceWithRealJwt();
         await expect(
-          service.disableTwoFactor('ctest123', 'password123', '000000'),
-        ).rejects.toThrow(UnauthorizedException);
+          svc.disableTwoFactor('ctest123', 'password123', '000000', token),
+        ).rejects.toThrow(BadRequestException);
         expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
       });
     });

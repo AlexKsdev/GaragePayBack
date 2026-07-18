@@ -144,14 +144,13 @@ describe('UsersService', () => {
       );
     });
 
-    it('never selects the password hash or the TOTP secret', async () => {
+    it('never selects the password hash', async () => {
       await service.findAll(pagination);
 
       const calls = mockPrisma.client.user.findMany.mock.calls as [
         { select: Record<string, unknown> },
       ][];
       expect(calls[0][0].select.passwordHash).toBeUndefined();
-      expect(calls[0][0].select.totpSecret).toBeUndefined();
     });
 
     describe('search', () => {

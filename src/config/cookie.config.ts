@@ -5,10 +5,13 @@ export const COOKIE_NAMES = {
   refresh: 'pc_refresh',
   csrf: 'pc_csrf',
   user: 'pc_user',
-  // Half-finished login: password accepted, TOTP code still owed. Read only by
-  // /auth/2fa/verify. Deliberately a separate cookie from `access` — the JWT
+  // Half-finished login: password accepted, emailed code still owed. Read only
+  // by /auth/2fa/verify. Deliberately a separate cookie from `access` — the JWT
   // strategy reads `access` alone, so this can never authenticate anything.
   pending2fa: 'pc_2fa',
+  // Carries the hash of an emailed enable/disable code while that flow is in
+  // progress (user already signed in). Read only by /auth/2fa/enable|disable.
+  twoFaAction: 'pc_2fa_action',
   // Proof that a factor was re-entered just now. Read only by StepUpGuard, and
   // separate from `access` for the same reason as pending2fa: it grants no
   // session on its own, it only unlocks destructive actions for a short while.
