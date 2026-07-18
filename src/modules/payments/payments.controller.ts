@@ -27,6 +27,8 @@ import { GemPack } from '../../config/gem-packs.config';
 import { CheckoutResponseDto } from './dto/checkout-response.dto';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { ListPaymentsQueryDto } from './dto/list-payments-query.dto';
+import { PaginatedPaymentsResponseDto } from './dto/paginated-payments-response.dto';
 import { PaymentResponseDto } from './dto/payment-response.dto';
 import { UpdatePaymentStatusDto } from './dto/update-payment-status.dto';
 import { PaymentsService } from './payments.service';
@@ -80,6 +82,15 @@ export class PaymentsController {
     @Query() pagination: PaginationDto,
   ): Promise<PaymentResponseDto[]> {
     return this.paymentsService.findAll(user.id, pagination);
+  }
+
+  // Declared before @Get(':id') so the static segment wins the route match.
+  @Get('admin')
+  @UseGuards(JwtGuard, AdminGuard)
+  findAllForAdmin(
+    @Query() query: ListPaymentsQueryDto,
+  ): Promise<PaginatedPaymentsResponseDto> {
+    return this.paymentsService.findAllForAdmin(query);
   }
 
   @Get(':id')
