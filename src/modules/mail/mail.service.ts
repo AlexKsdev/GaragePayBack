@@ -23,4 +23,21 @@ export class MailService {
 
     this.logger.log(`Password reset email sent to ${email}`);
   }
+
+  async sendTwoFactorCode(email: string, code: string): Promise<void> {
+    const from = process.env.RESEND_FROM_EMAIL ?? 'no-reply@purecraft.net';
+
+    const { error } = await this.resend.emails.send({
+      from,
+      to: email,
+      subject: 'Your PureCraft sign-in code',
+      text: `Your sign-in code is ${code}. It expires in 5 minutes.\n\nIf you didn't try to sign in, you can ignore this email.`,
+    });
+    if (error) {
+      throw new Error(`Failed to send two-factor code email: ${error.message}`);
+    }
+
+    // Never log the code itself.
+    this.logger.log(`Two-factor code email sent to ${email}`);
+  }
 }

@@ -71,9 +71,10 @@ export class AuthController {
     // pending cookie that /auth/2fa/verify can redeem. No access or refresh
     // cookie is issued here at all.
     if (user.totpEnabled) {
+      // Mints the pending cookie and, for the email method, sends the code.
       res.cookie(
         COOKIE_NAMES.pending2fa,
-        this.authService.signPending2faToken(user.id),
+        await this.authService.startTwoFactorLogin(user),
         authCookieOptions(PENDING_2FA_TTL_MS),
       );
       return { twoFactorRequired: true };
@@ -119,6 +120,35 @@ export class AuthController {
       result.user,
     );
     return { user: result.user };
+  }
+
+  // Re-sends the email code for the pending login. Tighter throttle than verify
+  // so it can't be turned into an email-spam lever.
+  @Post('2fa/resend')
+  @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  async resendTwoFactor(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ resent: true }> {
+    const pending = req.cookies?.[COOKIE_NAMES.pending2fa] as
+      | string
+      | undefined;
+    if (!pending)
+      throw new UnauthorizedException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionExpired,
+          'No two-factor session',
+        ),
+      );
+
+    res.cookie(
+      COOKIE_NAMES.pending2fa,
+      await this.authService.resendTwoFactorCode(pending),
+      authCookieOptions(PENDING_2FA_TTL_MS),
+    );
+    return { resent: true };
   }
 
   // Deliberately not gated on JwtGuard: the access token expires in 15 minutes
