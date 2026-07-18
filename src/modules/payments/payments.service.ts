@@ -5,11 +5,11 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { AdminActionType, PaymentStatus } from '@prisma/client';
+import { AdminActionType, PaymentStatus, Prisma } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { assertOwnerOrAdmin, isAdmin } from '../../common/ownership.util';
+import { assertOwnerOrAdmin } from '../../common/ownership.util';
 import { AuditService } from '../audit/audit.service';
 import { frontendBaseUrl } from '../../config/frontend.config';
 import {
@@ -20,6 +20,8 @@ import {
 } from '../../config/gem-packs.config';
 import { CheckoutResponseDto } from './dto/checkout-response.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { ListPaymentsQueryDto } from './dto/list-payments-query.dto';
+import { PaginatedPaymentsResponseDto } from './dto/paginated-payments-response.dto';
 import { PaymentResponseDto } from './dto/payment-response.dto';
 import { UpdatePaymentStatusDto } from './dto/update-payment-status.dto';
 import { STRIPE_CLIENT } from './stripe.provider';
@@ -33,6 +35,13 @@ const PAYMENT_SELECT = {
   status: true,
   stripePaymentId: true,
   createdAt: true,
+} as const;
+
+// Same fields as PAYMENT_SELECT plus the buyer, trimmed to what an orders table
+// needs — never the password hash or other user secrets.
+const ADMIN_PAYMENT_SELECT = {
+  ...PAYMENT_SELECT,
+  user: { select: { id: true, name: true, email: true } },
 } as const;
 
 @Injectable()
@@ -159,18 +168,47 @@ export class PaymentsService {
     });
   }
 
+  // A caller's own purchase history. Admins browse the whole catalogue through
+  // findAllForAdmin instead — this route no longer widens for them.
   async findAll(
     userId: string,
     pagination: PaginationDto,
   ): Promise<PaymentResponseDto[]> {
-    const where = (await isAdmin(this.prisma, userId)) ? {} : { userId };
     return this.prisma.client.payment.findMany({
-      where,
+      where: { userId },
       select: PAYMENT_SELECT,
       skip: pagination.skip,
       take: pagination.limit,
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  async findAllForAdmin(
+    query: ListPaymentsQueryDto,
+  ): Promise<PaginatedPaymentsResponseDto> {
+    const where: Prisma.PaymentWhereInput = query.status
+      ? { status: query.status }
+      : {};
+
+    // The count runs against the same filter, or the pager would offer pages
+    // that don't exist.
+    const [items, total] = await Promise.all([
+      this.prisma.client.payment.findMany({
+        where,
+        select: ADMIN_PAYMENT_SELECT,
+        skip: query.skip,
+        take: query.limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.client.payment.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page: query.page ?? 1,
+      limit: query.limit ?? 20,
+    };
   }
 
   async findOne(

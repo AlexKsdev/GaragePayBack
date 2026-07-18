@@ -33,6 +33,7 @@ const mockPrisma = {
       findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
+      count: jest.fn(),
     },
     user: { update: jest.fn(), findUnique: jest.fn() },
     $transaction: jest.fn((cb: (tx: typeof mockTx) => unknown) => cb(mockTx)),
@@ -119,13 +120,83 @@ describe('PaymentsService', () => {
       );
     });
 
-    it('returns all payments when the DB role is admin', async () => {
+    // The admin overload is gone: admins get their own history here, and the
+    // whole catalogue only through the dedicated GET /payments/admin route.
+    it('scopes to the caller even when the DB role is admin', async () => {
       mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.ADMIN });
       mockPrisma.client.payment.findMany.mockResolvedValue([]);
       await service.findAll('cadmin', pagination);
       expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: {} }),
+        expect.objectContaining({ where: { userId: 'cadmin' } }),
       );
+    });
+  });
+
+  describe('findAllForAdmin()', () => {
+    const buyer = { id: 'cuser1', name: 'Ann', email: 'ann@purecraft.net' };
+    const adminRow = { ...basePayment, user: buyer };
+
+    it('returns the paginated envelope with the buyer summary', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([adminRow]);
+      mockPrisma.client.payment.count.mockResolvedValue(1);
+
+      const result = await service.findAllForAdmin({
+        skip: 0,
+        limit: 20,
+        page: 1,
+      });
+
+      expect(result).toEqual({
+        items: [adminRow],
+        total: 1,
+        page: 1,
+        limit: 20,
+      });
+      expect(result.items[0].user).toEqual(buyer);
+    });
+
+    it('selects the buyer relation and nothing else off it', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      mockPrisma.client.payment.count.mockResolvedValue(0);
+
+      await service.findAllForAdmin({ skip: 0, limit: 20, page: 1 });
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const arg = mockPrisma.client.payment.findMany.mock.calls[0][0] as {
+        select: { user: { select: Record<string, boolean> } };
+      };
+      expect(arg.select.user.select).toEqual({
+        id: true,
+        name: true,
+        email: true,
+      });
+    });
+
+    it('drives both the page query and the count with the status filter', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      mockPrisma.client.payment.count.mockResolvedValue(0);
+
+      await service.findAllForAdmin({
+        skip: 0,
+        limit: 20,
+        page: 1,
+        status: PaymentStatus.REFUNDED,
+      });
+
+      const where = { status: PaymentStatus.REFUNDED };
+      expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where }),
+      );
+      expect(mockPrisma.client.payment.count).toHaveBeenCalledWith({ where });
+    });
+
+    it('falls back to page 1 / limit 20 when they are absent', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      mockPrisma.client.payment.count.mockResolvedValue(0);
+
+      const result = await service.findAllForAdmin({ skip: 0 });
+
+      expect(result).toMatchObject({ page: 1, limit: 20 });
     });
   });
 
