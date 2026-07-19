@@ -34,3 +34,19 @@ export function authError(
 ): { message: string; code: AuthErrorCode } {
   return { message, code };
 }
+
+export const QUEST_ERROR_CODES = {
+  notFound: 'QUEST_NOT_FOUND',
+  notComplete: 'QUEST_NOT_COMPLETE',
+  alreadyClaimed: 'QUEST_ALREADY_CLAIMED',
+} as const;
+
+export type QuestErrorCode =
+  (typeof QUEST_ERROR_CODES)[keyof typeof QUEST_ERROR_CODES];
+
+export function questError(
+  code: QuestErrorCode,
+  message: string,
+): { message: string; code: QuestErrorCode } {
+  return { message, code };
+}

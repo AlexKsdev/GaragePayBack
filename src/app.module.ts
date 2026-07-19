@@ -11,6 +11,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { QuestsModule } from './modules/quests/quests.module';
 import { ProductsModule } from './modules/products/products.module';
 
 @Module({
@@ -23,6 +24,7 @@ import { ProductsModule } from './modules/products/products.module';
     AuthModule,
     UsersModule,
     PaymentsModule,
+    QuestsModule,
     ProductsModule,
   ],
   controllers: [AppController],
