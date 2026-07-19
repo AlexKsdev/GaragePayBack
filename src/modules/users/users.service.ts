@@ -20,7 +20,7 @@ const USER_SELECT = {
   email: true,
   name: true,
   role: true,
-  totpEnabled: true,
+  twoFactorEnabled: true,
   rank: true,
   avatar: true,
   xp: true,

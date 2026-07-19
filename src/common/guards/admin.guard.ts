@@ -24,14 +24,14 @@ export class AdminGuard implements CanActivate {
 
     const user = await this.prisma.client.user.findUnique({
       where: { id: userId },
-      select: { role: true, active: true, totpEnabled: true },
+      select: { role: true, active: true, twoFactorEnabled: true },
     });
     if (!user || user.role !== Role.ADMIN || !user.active) {
       throw new ForbiddenException('Admin access required');
     }
     // No admin without 2FA. They can still sign in and enrol — only the admin
     // surface is closed until they do — so this locks nobody out permanently.
-    if (!user.totpEnabled) {
+    if (!user.twoFactorEnabled) {
       throw new ForbiddenException(
         'Two-factor authentication is required for admin access',
       );

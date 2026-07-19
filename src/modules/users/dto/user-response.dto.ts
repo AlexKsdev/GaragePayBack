@@ -5,7 +5,7 @@ export class UserResponseDto {
   email: string;
   name: string;
   role: Role;
-  totpEnabled: boolean;
+  twoFactorEnabled: boolean;
   rank: string;
   avatar: string | null;
   level: number;

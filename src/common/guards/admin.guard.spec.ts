@@ -26,14 +26,14 @@ describe('AdminGuard', () => {
     mockPrisma.client.user.findUnique.mockResolvedValue({
       role: Role.ADMIN,
       active: true,
-      totpEnabled: true,
+      twoFactorEnabled: true,
     });
     await expect(guard.canActivate(buildContext('admin-1'))).resolves.toBe(
       true,
     );
     expect(mockPrisma.client.user.findUnique).toHaveBeenCalledWith({
       where: { id: 'admin-1' },
-      select: { role: true, active: true, totpEnabled: true },
+      select: { role: true, active: true, twoFactorEnabled: true },
     });
   });
 
@@ -41,7 +41,7 @@ describe('AdminGuard', () => {
     mockPrisma.client.user.findUnique.mockResolvedValue({
       role: Role.ADMIN,
       active: true,
-      totpEnabled: false,
+      twoFactorEnabled: false,
     });
     await expect(guard.canActivate(buildContext('admin-1'))).rejects.toThrow(
       ForbiddenException,
@@ -52,7 +52,7 @@ describe('AdminGuard', () => {
     mockPrisma.client.user.findUnique.mockResolvedValue({
       role: Role.ADMIN,
       active: false,
-      totpEnabled: true,
+      twoFactorEnabled: true,
     });
     await expect(guard.canActivate(buildContext('admin-1'))).rejects.toThrow(
       ForbiddenException,
@@ -63,7 +63,7 @@ describe('AdminGuard', () => {
     mockPrisma.client.user.findUnique.mockResolvedValue({
       role: Role.USER,
       active: true,
-      totpEnabled: true,
+      twoFactorEnabled: true,
     });
     await expect(guard.canActivate(buildContext('user-1'))).rejects.toThrow(
       ForbiddenException,

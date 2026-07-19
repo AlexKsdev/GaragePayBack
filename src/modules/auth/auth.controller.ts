@@ -32,9 +32,11 @@ import {
   DisableTwoFactorDto,
   TwoFactorCodeDto,
   TwoFactorRequiredDto,
-  TwoFactorSetupResponseDto,
 } from './dto/two-factor.dto';
-import { PENDING_2FA_TTL_MS } from '../../config/totp.config';
+import {
+  PENDING_2FA_TTL_MS,
+  TWO_FA_ACTION_TTL_MS,
+} from '../../config/two-factor.config';
 import { STEP_UP_TTL_MS } from '../../config/step-up.config';
 import { StepUpDto } from './dto/step-up.dto';
 import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
@@ -70,8 +72,8 @@ export class AuthController {
     // With 2FA on, the password alone earns no session — only a short-lived
     // pending cookie that /auth/2fa/verify can redeem. No access or refresh
     // cookie is issued here at all.
-    if (user.totpEnabled) {
-      // Mints the pending cookie and, for the email method, sends the code.
+    if (user.twoFactorEnabled) {
+      // Mints the pending cookie and emails the login code.
       res.cookie(
         COOKIE_NAMES.pending2fa,
         await this.authService.startTwoFactorLogin(user),
@@ -211,17 +213,26 @@ export class AuthController {
     @Body() dto: StepUpDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    const token = await this.authService.stepUp(user.id, dto);
+    const token = await this.authService.stepUp(user.id, dto.password);
     res.cookie(COOKIE_NAMES.stepUp, token, authCookieOptions(STEP_UP_TTL_MS));
   }
 
+  // Emails a confirmation code and parks its hash in the action cookie; the
+  // account only gains 2FA once /2fa/enable proves the code arrived.
   @Post('2fa/setup')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtGuard)
-  setupTwoFactor(
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  async setupTwoFactor(
     @CurrentUser() user: AuthenticatedRequest['user'],
-  ): Promise<TwoFactorSetupResponseDto> {
-    return this.authService.setupTwoFactor(user.id);
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ sent: true }> {
+    res.cookie(
+      COOKIE_NAMES.twoFaAction,
+      await this.authService.setupTwoFactor(user.id),
+      authCookieOptions(TWO_FA_ACTION_TTL_MS),
+    );
+    return { sent: true };
   }
 
   @Post('2fa/enable')
@@ -231,8 +242,31 @@ export class AuthController {
   async enableTwoFactor(
     @CurrentUser() user: AuthenticatedRequest['user'],
     @Body() dto: TwoFactorCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    await this.authService.enableTwoFactor(user.id, dto.code);
+    const action = req.cookies?.[COOKIE_NAMES.twoFaAction] as
+      | string
+      | undefined;
+    await this.authService.enableTwoFactor(user.id, dto.code, action);
+    res.clearCookie(COOKIE_NAMES.twoFaAction, { path: '/' });
+  }
+
+  // Emails the code needed to turn 2FA off (paired with the password below).
+  @Post('2fa/disable/request')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  async requestDisableTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ sent: true }> {
+    res.cookie(
+      COOKIE_NAMES.twoFaAction,
+      await this.authService.requestDisableCode(user.id),
+      authCookieOptions(TWO_FA_ACTION_TTL_MS),
+    );
+    return { sent: true };
   }
 
   @Post('2fa/disable')
@@ -242,8 +276,19 @@ export class AuthController {
   async disableTwoFactor(
     @CurrentUser() user: AuthenticatedRequest['user'],
     @Body() dto: DisableTwoFactorDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    await this.authService.disableTwoFactor(user.id, dto.password, dto.code);
+    const action = req.cookies?.[COOKIE_NAMES.twoFaAction] as
+      | string
+      | undefined;
+    await this.authService.disableTwoFactor(
+      user.id,
+      dto.password,
+      dto.code,
+      action,
+    );
+    res.clearCookie(COOKIE_NAMES.twoFaAction, { path: '/' });
   }
 
   // Always responds the same way whether or not the email exists, so the

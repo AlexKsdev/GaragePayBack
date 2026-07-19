@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Role, TwoFactorMethod, User } from '@prisma/client';
+import { Role, User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes, randomInt } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -17,12 +17,13 @@ import { JwtPayload } from '../../common/types/jwt-payload.type';
 import { MailService } from '../mail/mail.service';
 import { AuthUserDto } from './dto/auth-response.dto';
 import { RegisterDto } from './dto/register.dto';
-import { TwoFactorSetupResponseDto } from './dto/two-factor.dto';
 import {
   PENDING_2FA_PURPOSE,
   PENDING_2FA_TTL_MS,
-} from '../../config/totp.config';
-import { TotpService } from './totp.service';
+  TWO_FA_ACTION_TTL_MS,
+  TWO_FA_DISABLE_PURPOSE,
+  TWO_FA_ENABLE_PURPOSE,
+} from '../../config/two-factor.config';
 import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
 import { STEP_UP_PURPOSE, STEP_UP_TTL_MS } from '../../config/step-up.config';
 
@@ -43,7 +44,6 @@ export class AuthService {
     private readonly jwt: JwtService,
     @Inject(AuthConfig) private readonly authConfig: AuthConfig,
     private readonly mail: MailService,
-    private readonly totp: TotpService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthTokens> {
@@ -71,7 +71,7 @@ export class AuthService {
             email: true,
             name: true,
             role: true,
-            totpEnabled: true,
+            twoFactorEnabled: true,
           },
         });
         const rt = this.newRefreshToken(created.id);
@@ -99,30 +99,20 @@ export class AuthService {
   }
 
   /**
-   * Re-proves one factor and mints the short-lived token that unlocks
-   * destructive actions. Accepts a TOTP code for accounts with 2FA on (every
-   * admin), the password otherwise.
-   *
-   * A code is refused outright when 2FA is off: there would be no secret to
-   * check it against, and silently falling back to "accepted" would make the
-   * guard decorative.
+   * Re-proves the password and mints the short-lived token that unlocks
+   * destructive actions. With authenticator codes gone, the password is the
+   * factor re-entered here.
    */
-  async stepUp(
-    userId: string,
-    factors: { password?: string; code?: string },
-  ): Promise<string> {
+  async stepUp(userId: string, password: string): Promise<string> {
     const user = await this.prisma.client.user.findUnique({
       where: { id: userId },
     });
     // Same answer for a missing, banned or unproven account — no signal either.
-    if (!user || !user.active) {
-      throw new UnauthorizedException(
-        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
-      );
-    }
-
-    const proven = await this.provesAFactor(user, factors);
-    if (!proven) {
+    if (
+      !user ||
+      !user.active ||
+      !(await bcrypt.compare(password, user.passwordHash))
+    ) {
       throw new UnauthorizedException(
         authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
       );
@@ -137,73 +127,34 @@ export class AuthService {
     );
   }
 
-  private async provesAFactor(
-    user: User,
-    factors: { password?: string; code?: string },
-  ): Promise<boolean> {
-    if (factors.code) {
-      if (!user.totpEnabled || !user.totpSecret) return false;
-      return this.totp.verify(factors.code, user.totpSecret);
-    }
-    if (factors.password) {
-      return bcrypt.compare(factors.password, user.passwordHash);
-    }
-    return false;
-  }
-
   /**
-   * Mints the half-finished-login token: password accepted, code still owed.
+   * Opens the second-factor step after the password checks out: mints a
+   * one-time code, emails it, and binds its hash to the pending token.
    *
-   * Scoped with `purpose: '2fa'` and delivered in its own cookie that the JWT
-   * strategy never reads, so it cannot stand in for a session. Both guards
-   * matter — the claim alone would not help if this were ever put in the
-   * access cookie, and the cookie separation alone would not help if the
-   * strategy were later widened.
-   */
-  signPending2faToken(userId: string, codeHash?: string): string {
-    return this.jwt.sign(
-      // The emailed code's hash rides inside the signed token, so the second
-      // factor needs no DB column and expires with the token itself. The client
-      // can't forge or read-modify it, and it is never the plaintext code.
-      {
-        sub: userId,
-        purpose: PENDING_2FA_PURPOSE,
-        ...(codeHash && { codeHash }),
-      },
-      {
-        secret: this.authConfig.jwtSecret,
-        expiresIn: Math.floor(PENDING_2FA_TTL_MS / 1000),
-      },
-    );
-  }
-
-  /**
-   * Opens the second-factor step after the password checks out. For the email
-   * method it mints a one-time code, emails it, and binds its hash to the
-   * pending token; for TOTP it just mints the token — the authenticator app
-   * already holds the secret.
+   * The hash rides inside the signed, httpOnly token, so the second factor
+   * needs no DB column and expires with the token itself. The client can't
+   * forge or read-modify it, and it is never the plaintext code. Scoped with
+   * `purpose: '2fa'` so a session token can never be redeemed at /2fa/verify.
    */
   async startTwoFactorLogin(user: User): Promise<string> {
-    if (user.twoFactorMethod !== TwoFactorMethod.EMAIL) {
-      return this.signPending2faToken(user.id);
-    }
     const code = this.generateEmailCode();
     const codeHash = await bcrypt.hash(code, 10);
     await this.mail.sendTwoFactorCode(user.email, code);
-    return this.signPending2faToken(user.id, codeHash);
+    return this.signCodeToken(
+      user.id,
+      PENDING_2FA_PURPOSE,
+      codeHash,
+      PENDING_2FA_TTL_MS,
+    );
   }
 
   /** Re-issues an email code against a still-valid pending session. */
   async resendTwoFactorCode(pendingToken: string): Promise<string> {
-    const { sub } = this.readPending2faToken(pendingToken);
+    const { sub } = this.readCodeToken(pendingToken, PENDING_2FA_PURPOSE);
     const user = await this.prisma.client.user.findUnique({
       where: { id: sub },
     });
-    if (
-      !user ||
-      !user.active ||
-      user.twoFactorMethod !== TwoFactorMethod.EMAIL
-    ) {
+    if (!user || !user.active || !user.twoFactorEnabled) {
       throw new UnauthorizedException(
         authError(
           AUTH_ERROR_CODES.twoFactorSessionInvalid,
@@ -220,14 +171,17 @@ export class AuthService {
   }
 
   /**
-   * Completes a two-step login: verifies the pending token and the code, then
-   * hands back a real session.
+   * Completes a two-step login: verifies the pending token and the emailed
+   * code, then hands back a real session.
    */
   async verifyTwoFactorLogin(
     pendingToken: string,
     code: string,
   ): Promise<AuthTokens> {
-    const { sub, codeHash } = this.readPending2faToken(pendingToken);
+    const { sub, codeHash } = this.readCodeToken(
+      pendingToken,
+      PENDING_2FA_PURPOSE,
+    );
 
     const user = await this.prisma.client.user.findUnique({
       where: { id: sub },
@@ -237,45 +191,44 @@ export class AuthService {
         authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
       );
 
-    if (user.twoFactorMethod === TwoFactorMethod.EMAIL) {
-      if (!codeHash || !(await bcrypt.compare(code, codeHash))) {
-        throw new UnauthorizedException(
-          authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
-        );
-      }
-    } else {
-      if (!user.totpEnabled || !user.totpSecret) {
-        throw new UnauthorizedException(
-          authError(
-            AUTH_ERROR_CODES.twoFactorNotEnabled,
-            'Two-factor authentication is not enabled',
-          ),
-        );
-      }
-      if (!this.totp.verify(code, user.totpSecret)) {
-        throw new UnauthorizedException(
-          authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
-        );
-      }
+    if (!(await bcrypt.compare(code, codeHash))) {
+      throw new UnauthorizedException(
+        authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
+      );
     }
 
     return this.login(user);
   }
 
+  /** Signs a short-lived token binding an emailed code's hash to a purpose. */
+  private signCodeToken(
+    sub: string,
+    purpose: string,
+    codeHash: string,
+    ttlMs: number,
+  ): string {
+    return this.jwt.sign(
+      { sub, purpose, codeHash },
+      {
+        secret: this.authConfig.jwtSecret,
+        expiresIn: Math.floor(ttlMs / 1000),
+      },
+    );
+  }
+
   /**
-   * Verifies a pending-2FA token's signature and purpose, returning the user id
-   * and (for the email method) the bound code hash. A normal access token must
-   * never be redeemable here — the purpose claim is what keeps them separate.
+   * Verifies a code token's signature and purpose, returning the subject and
+   * bound code hash. The purpose claim keeps a login token, an enable token and
+   * a disable token from ever being swapped for one another, and a plain access
+   * token from being redeemed as any of them.
    */
-  private readPending2faToken(pendingToken: string): {
-    sub: string;
-    codeHash?: string;
-  } {
+  private readCodeToken(
+    token: string,
+    expectedPurpose: string,
+  ): { sub: string; codeHash: string } {
     let payload: { sub?: string; purpose?: string; codeHash?: string };
     try {
-      payload = this.jwt.verify(pendingToken, {
-        secret: this.authConfig.jwtSecret,
-      });
+      payload = this.jwt.verify(token, { secret: this.authConfig.jwtSecret });
     } catch {
       throw new UnauthorizedException(
         authError(
@@ -284,7 +237,11 @@ export class AuthService {
         ),
       );
     }
-    if (payload.purpose !== PENDING_2FA_PURPOSE || !payload.sub) {
+    if (
+      payload.purpose !== expectedPurpose ||
+      !payload.sub ||
+      !payload.codeHash
+    ) {
       throw new UnauthorizedException(
         authError(
           AUTH_ERROR_CODES.twoFactorSessionInvalid,
@@ -307,7 +264,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
-        totpEnabled: user.totpEnabled,
+        twoFactorEnabled: user.twoFactorEnabled,
       },
     };
   }
@@ -393,24 +350,24 @@ export class AuthService {
   }
 
   /**
-   * Starts 2FA enrolment: mints a secret and stores it, but leaves 2FA off
-   * until `enableTwoFactor` proves the user can actually produce a code —
-   * otherwise a mis-scanned QR would lock them out of their own account.
+   * Starts 2FA enrolment by emailing a confirmation code and returning a token
+   * that binds its hash. Nothing is turned on until `enableTwoFactor` proves the
+   * code arrived — which also confirms the address actually receives mail, so a
+   * wrong or undeliverable inbox can't lock the owner out at the next login.
    *
-   * Refuses to re-run while 2FA is on: otherwise anyone holding a live session
-   * could silently swap the secret for one of their own and keep the account
-   * even after the owner changed their password.
+   * Refuses while 2FA is already on: re-enrolling would be meaningless and the
+   * disable flow is the way back.
    */
-  async setupTwoFactor(userId: string): Promise<TwoFactorSetupResponseDto> {
+  async setupTwoFactor(userId: string): Promise<string> {
     const user = await this.prisma.client.user.findUnique({
       where: { id: userId },
-      select: { email: true, totpEnabled: true },
+      select: { email: true, twoFactorEnabled: true },
     });
     if (!user)
       throw new NotFoundException(
         authError(AUTH_ERROR_CODES.userNotFound, 'User not found'),
       );
-    if (user.totpEnabled) {
+    if (user.twoFactorEnabled) {
       throw new BadRequestException(
         authError(
           AUTH_ERROR_CODES.twoFactorAlreadyEnabled,
@@ -419,74 +376,68 @@ export class AuthService {
       );
     }
 
-    const secret = this.totp.generateSecret();
-    await this.prisma.client.user.update({
-      where: { id: userId },
-      data: { totpSecret: secret },
-    });
-
-    return {
-      otpauthUrl: this.totp.toUri(secret, user.email),
-      qrDataUrl: await this.totp.toQrDataUrl(secret, user.email),
-    };
+    return this.emailActionCode(userId, user.email, TWO_FA_ENABLE_PURPOSE);
   }
 
-  /** Turns 2FA on, but only once the user proves they hold the secret. */
-  async enableTwoFactor(userId: string, code: string): Promise<void> {
+  /** Turns 2FA on once the emailed confirmation code checks out. */
+  async enableTwoFactor(
+    userId: string,
+    code: string,
+    actionToken: string | undefined,
+  ): Promise<void> {
+    await this.consumeActionCode(
+      actionToken,
+      TWO_FA_ENABLE_PURPOSE,
+      userId,
+      code,
+    );
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { twoFactorEnabled: true },
+    });
+  }
+
+  /** Emails the code needed to turn 2FA off, returning the token that binds it. */
+  async requestDisableCode(userId: string): Promise<string> {
     const user = await this.prisma.client.user.findUnique({
       where: { id: userId },
-      select: { totpSecret: true, totpEnabled: true },
+      select: { email: true, twoFactorEnabled: true },
     });
     if (!user)
       throw new NotFoundException(
         authError(AUTH_ERROR_CODES.userNotFound, 'User not found'),
       );
-    if (user.totpEnabled) {
+    if (!user.twoFactorEnabled) {
       throw new BadRequestException(
         authError(
-          AUTH_ERROR_CODES.twoFactorAlreadyEnabled,
-          'Two-factor authentication is already enabled',
+          AUTH_ERROR_CODES.twoFactorNotEnabled,
+          'Two-factor authentication is not enabled',
         ),
       );
     }
-    if (!user.totpSecret) {
-      throw new BadRequestException(
-        authError(
-          AUTH_ERROR_CODES.twoFactorSetupMissing,
-          'Start setup before enabling',
-        ),
-      );
-    }
-    if (!this.totp.verify(code, user.totpSecret)) {
-      throw new BadRequestException(
-        authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
-      );
-    }
-
-    await this.prisma.client.user.update({
-      where: { id: userId },
-      data: { totpEnabled: true },
-    });
+    return this.emailActionCode(userId, user.email, TWO_FA_DISABLE_PURPOSE);
   }
 
   /**
-   * Turns 2FA off. This is a security downgrade, so it re-proves both factors:
-   * a hijacked session alone must not be enough to strip the second factor.
+   * Turns 2FA off. A security downgrade, so it re-proves both factors: the
+   * password and a fresh emailed code — a hijacked session alone must not be
+   * enough to strip the second factor.
    */
   async disableTwoFactor(
     userId: string,
     password: string,
     code: string,
+    actionToken: string | undefined,
   ): Promise<void> {
     const user = await this.prisma.client.user.findUnique({
       where: { id: userId },
-      select: { passwordHash: true, totpSecret: true, totpEnabled: true },
+      select: { passwordHash: true, twoFactorEnabled: true },
     });
     if (!user)
       throw new NotFoundException(
         authError(AUTH_ERROR_CODES.userNotFound, 'User not found'),
       );
-    if (!user.totpEnabled || !user.totpSecret) {
+    if (!user.twoFactorEnabled) {
       throw new BadRequestException(
         authError(
           AUTH_ERROR_CODES.twoFactorNotEnabled,
@@ -499,16 +450,54 @@ export class AuthService {
         authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
       );
     }
-    if (!this.totp.verify(code, user.totpSecret)) {
-      throw new UnauthorizedException(
-        authError(AUTH_ERROR_CODES.invalidCredentials, 'Invalid credentials'),
-      );
-    }
+    await this.consumeActionCode(
+      actionToken,
+      TWO_FA_DISABLE_PURPOSE,
+      userId,
+      code,
+    );
 
     await this.prisma.client.user.update({
       where: { id: userId },
-      data: { totpEnabled: false, totpSecret: null },
+      data: { twoFactorEnabled: false },
     });
+  }
+
+  /** Generates a code, emails it, and returns the token binding its hash. */
+  private async emailActionCode(
+    userId: string,
+    email: string,
+    purpose: string,
+  ): Promise<string> {
+    const code = this.generateEmailCode();
+    const codeHash = await bcrypt.hash(code, 10);
+    await this.mail.sendTwoFactorCode(email, code);
+    return this.signCodeToken(userId, purpose, codeHash, TWO_FA_ACTION_TTL_MS);
+  }
+
+  /** Validates an action token against the caller and the entered code. */
+  private async consumeActionCode(
+    actionToken: string | undefined,
+    purpose: string,
+    userId: string,
+    code: string,
+  ): Promise<void> {
+    if (!actionToken) {
+      throw new BadRequestException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionExpired,
+          'No two-factor session',
+        ),
+      );
+    }
+    const { sub, codeHash } = this.readCodeToken(actionToken, purpose);
+    // The token is bound to the account that requested it: a code emailed to
+    // one user can't be redeemed while signed in as another.
+    if (sub !== userId || !(await bcrypt.compare(code, codeHash))) {
+      throw new BadRequestException(
+        authError(AUTH_ERROR_CODES.invalidCode, 'Invalid code'),
+      );
+    }
   }
 
   /** Kills every live session for a user (reuse detected, or password reset). */
