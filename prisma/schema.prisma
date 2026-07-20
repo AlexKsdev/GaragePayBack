@@ -23,6 +23,13 @@ enum Currency {
   GEMS
 }
 
+/// The locales the site is routed for. Editorial content genuinely exists in
+/// both, so it is stored per-locale rather than keyed into the i18n messages.
+enum Locale {
+  EN
+  UK
+}
+
 model User {
   id           String @id @default(cuid())
   email        String @unique
@@ -192,6 +199,11 @@ enum AdminActionType {
   // Same reasoning as products: claims reference a quest by key and must keep
   // meaning something, so removal from the daily set is `active: false`.
   QUEST_DEACTIVATE
+  POST_CREATE
+  POST_UPDATE
+  // Taking a post off the blog is `published: false`, so a mistaken unpublish
+  // costs a click rather than the article.
+  POST_UNPUBLISH
 }
 
 enum QuestRewardType {
@@ -215,4 +227,40 @@ model Quest {
   sortOrder    Int             @default(0)
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
+}
+
+// A blog post. Everything here is language-independent; anything a translator
+// would touch lives on PostTranslation, so a third locale is rows rather than
+// a migration.
+model Post {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  image       String
+  tag         String
+  tagAccent   String // name from the allowed accent list
+  author      String
+  published   Boolean   @default(false)
+  /// Set when the post is first published; the blog orders by it.
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  translations PostTranslation[]
+}
+
+// One row per language per post. Cascade is right here where it is wrong for
+// purchases: a translation means nothing without its post, and nothing else
+// references it.
+model PostTranslation {
+  id      String @id @default(cuid())
+  postId  String
+  locale  Locale
+  title   String
+  excerpt String
+  /// Markdown. Rendered with raw HTML disabled, so it cannot inject markup.
+  body    String
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, locale])
 }
