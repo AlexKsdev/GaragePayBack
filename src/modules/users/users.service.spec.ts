@@ -269,8 +269,9 @@ describe('UsersService', () => {
       mockPrisma.client.user.update.mockResolvedValue({ ...baseUser, xp: 50 });
 
       await service.grantXp('ctest1', 50);
-      const data = mockPrisma.client.user.update.mock.calls[0][0].data;
-      expect(data).toEqual({ xp: { increment: 50 } });
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { xp: { increment: 50 } } }),
+      );
     });
 
     it('rejects a non-positive amount', async () => {
