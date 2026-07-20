@@ -1,7 +1,16 @@
-import { QuestReward } from '../../../config/quests.config';
+import { QuestRewardType } from '@prisma/client';
+
+export class QuestReward {
+  type: QuestRewardType;
+  amount: number;
+}
 
 export class QuestDto {
   key: string;
+  /** Base title; the client localizes built-in keys and falls back to this. */
+  title: string;
+  icon: string;
+  color: string;
   target: number;
   progress: number;
   reward: QuestReward;
@@ -21,4 +30,18 @@ export class QuestClaimResponseDto {
   coins: number;
   gems: number;
   reward: QuestReward;
+}
+
+/** The full row an admin manages, including inactive quests. */
+export class AdminQuestDto {
+  id: string;
+  key: string;
+  title: string;
+  target: number;
+  rewardType: QuestRewardType;
+  rewardAmount: number;
+  icon: string;
+  color: string;
+  active: boolean;
+  sortOrder: number;
 }
