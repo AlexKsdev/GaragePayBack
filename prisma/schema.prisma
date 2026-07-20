@@ -57,6 +57,21 @@ model User {
   refreshTokens       RefreshToken[]
   purchases           Purchase[]
   passwordResetTokens PasswordResetToken[]
+  questClaims         QuestClaim[]
+}
+
+// One row per reward taken: its presence is what marks a quest claimed for the
+// day, and the unique key makes a double claim impossible even under a race.
+model QuestClaim {
+  id        String   @id @default(cuid())
+  userId    String
+  questKey  String
+  day       String // 'YYYY-MM-DD' in the quest timezone
+  claimedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questKey, day])
 }
 
 model Product {
