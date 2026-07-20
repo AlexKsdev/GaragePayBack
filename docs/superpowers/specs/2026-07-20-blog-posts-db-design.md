@@ -21,7 +21,6 @@ model Post {
   id           String            @id @default(cuid())
   slug         String            @unique
   image        String
-  tag          String
   tagAccent    String            // from the allowed accent list in config/
   author       String
   published    Boolean           @default(false)
@@ -37,12 +36,17 @@ model PostTranslation {
   locale  Locale
   title   String
   excerpt String
+  tag     String   // the chip's wording, e.g. "Update" / "Оновлення"
   body    String   // markdown
   post    Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
 
   @@unique([postId, locale])
 }
 ```
+
+`tag` sits here rather than on `Post`, which is where this design first put it:
+"Update" / "Event" / "Guide" is text a reader sees, so in a bilingual blog it has
+to be translated. Only `tagAccent` — a colour — is language-independent.
 
 `AdminActionType` gains `POST_CREATE`, `POST_UPDATE`, `POST_UNPUBLISH`.
 
@@ -110,9 +114,9 @@ it when volume justifies the query complexity, not before.
 
 ## Seeding
 
-The seven existing posts move into the seed script: English verbatim from
+The six existing posts move into the seed script: English verbatim from
 `constants.ts`, Ukrainian translated. `body` seeds as the excerpt — real article
-text does not exist today, and inventing seven articles about fictional server
+text does not exist today, and inventing six articles about fictional server
 updates would be fabricating content, not migrating it. Real bodies get authored
 through the admin panel.
 
