@@ -187,4 +187,32 @@ enum AdminActionType {
   // keep pointing at what was actually bought. `active: false` is what removal
   // from the shop means — and it is reversible.
   PRODUCT_DEACTIVATE
+  QUEST_CREATE
+  QUEST_UPDATE
+  // Same reasoning as products: claims reference a quest by key and must keep
+  // meaning something, so removal from the daily set is `active: false`.
+  QUEST_DEACTIVATE
+}
+
+enum QuestRewardType {
+  COINS
+  GEMS
+}
+
+// The daily quest catalogue. Admin-managed, so it lives here rather than in
+// code. `key` is the stable id the client localizes built-in quests by and
+// QuestClaim rows point at.
+model Quest {
+  id           String          @id @default(cuid())
+  key          String          @unique
+  title        String
+  target       Int
+  rewardType   QuestRewardType @default(COINS)
+  rewardAmount Int
+  icon         String // name from the allowed icon list
+  color        String
+  active       Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 }
