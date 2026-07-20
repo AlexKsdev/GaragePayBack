@@ -26,6 +26,11 @@ export class PostTranslationDto {
   @Length(1, 400)
   excerpt: string;
 
+  /** The tag chip's wording — display text, so it lives with the translation. */
+  @IsString()
+  @Length(1, 40)
+  tag: string;
+
   /** Markdown. Rendered with raw HTML disabled, so no sanitizing pass here. */
   @IsString()
   @Length(1, 40000)
@@ -43,10 +48,6 @@ export class CreatePostDto {
 
   @IsUrl({ require_protocol: true })
   image: string;
-
-  @IsString()
-  @Length(1, 40)
-  tag: string;
 
   @IsIn(POST_TAG_ACCENTS as readonly string[])
   tagAccent: string;
@@ -84,11 +85,6 @@ export class UpdatePostDto {
   @IsOptional()
   @IsUrl({ require_protocol: true })
   image?: string;
-
-  @IsOptional()
-  @IsString()
-  @Length(1, 40)
-  tag?: string;
 
   @IsOptional()
   @IsIn(POST_TAG_ACCENTS as readonly string[])

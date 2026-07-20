@@ -30,6 +30,7 @@ export class AdminPostTranslationDto {
   locale: Locale;
   title: string;
   excerpt: string;
+  tag: string;
   body: string;
 }
 
@@ -37,7 +38,6 @@ export class AdminPostDto {
   id: string;
   slug: string;
   image: string;
-  tag: string;
   tagAccent: string;
   author: string;
   published: boolean;

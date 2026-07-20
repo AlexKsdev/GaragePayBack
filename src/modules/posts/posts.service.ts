@@ -18,6 +18,7 @@ const TRANSLATION_SELECT = {
   locale: true,
   title: true,
   excerpt: true,
+  tag: true,
   body: true,
 } as const;
 
@@ -25,7 +26,6 @@ const POST_SELECT = {
   id: true,
   slug: true,
   image: true,
-  tag: true,
   tagAccent: true,
   author: true,
   published: true,
@@ -38,13 +38,7 @@ type PostRow = Prisma.PostGetPayload<{ select: typeof POST_SELECT }>;
 type TranslationRow = PostRow['translations'][number];
 
 /** Fields an update may change directly; `published` has its own endpoint. */
-const EDITABLE_FIELDS = [
-  'slug',
-  'image',
-  'tag',
-  'tagAccent',
-  'author',
-] as const;
+const EDITABLE_FIELDS = ['slug', 'image', 'tagAccent', 'author'] as const;
 
 @Injectable()
 export class PostsService {
@@ -158,7 +152,7 @@ export class PostsService {
 
     // Only what actually moved. An edit form posts the whole object, so most
     // fields arrive defined but identical — filtering on `undefined` alone
-    // would have the log claim five changes for a single tag edit.
+    // would have the log claim four changes for a single accent edit.
     const changed = EDITABLE_FIELDS.filter(
       (field) => dto[field] !== undefined && dto[field] !== current[field],
     );
@@ -273,7 +267,7 @@ export class PostsService {
       excerpt: text.excerpt,
       body: text.body,
       image: post.image,
-      tag: post.tag,
+      tag: text.tag,
       tagAccent: post.tagAccent,
       author: post.author,
       publishedAt: post.publishedAt!,

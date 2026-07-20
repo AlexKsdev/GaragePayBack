@@ -236,7 +236,7 @@ model Post {
   id          String    @id @default(cuid())
   slug        String    @unique
   image       String
-  tag         String
+  /// The chip's colour, not its wording — the label itself is translated.
   tagAccent   String // name from the allowed accent list
   author      String
   published   Boolean   @default(false)
@@ -257,6 +257,9 @@ model PostTranslation {
   locale  Locale
   title   String
   excerpt String
+  /// The tag chip's wording ("Update" / "Оновлення") — display text, so it is
+  /// translated like everything else a reader sees.
+  tag     String
   /// Markdown. Rendered with raw HTML disabled, so it cannot inject markup.
   body    String
 

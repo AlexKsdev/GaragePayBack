@@ -42,12 +42,14 @@ const EN = {
   locale: Locale.EN,
   title: 'Season 5 Update',
   excerpt: 'Three new biomes.',
+  tag: 'Update',
   body: 'word '.repeat(400).trim(), // 400 words -> 2 minutes
 };
 const UK = {
   locale: Locale.UK,
   title: 'Оновлення 5 сезону',
   excerpt: 'Три нові біоми.',
+  tag: 'Оновлення',
   body: 'слово '.repeat(100).trim(),
 };
 
@@ -55,7 +57,6 @@ const basePost = {
   id: 'cpost1',
   slug: 'season-5-update',
   image: 'https://img.test/a.png',
-  tag: 'Update',
   tagAccent: 'primary',
   author: 'PureCraft Staff',
   published: true,
@@ -104,6 +105,16 @@ describe('PostsService', () => {
 
       expect(items[0].title).toBe('Оновлення 5 сезону');
       expect(items[0].locale).toBe(Locale.UK);
+    });
+
+    it('translates the tag chip, since it is display text too', async () => {
+      mockPrisma.client.post.findMany.mockResolvedValue([basePost]);
+
+      const items = await service.findAll(Locale.UK);
+
+      expect(items[0].tag).toBe('Оновлення');
+      // The accent is a colour, so it stays language-independent.
+      expect(items[0].tagAccent).toBe('primary');
     });
 
     it('falls back to English when the translation is missing', async () => {
@@ -180,7 +191,6 @@ describe('PostsService', () => {
     const dto = {
       slug: 'new-post',
       image: 'https://img.test/b.png',
-      tag: 'News',
       tagAccent: 'sky',
       author: 'Staff',
       translations: [EN],
@@ -251,7 +261,7 @@ describe('PostsService', () => {
       mockPrisma.client.post.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.update('cadmin', 'cmissing', { tag: 'News' }),
+        service.update('cadmin', 'cmissing', { author: 'Someone' }),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -271,7 +281,7 @@ describe('PostsService', () => {
 
     it('logs which fields actually changed, not the whole submitted form', async () => {
       await service.update('cadmin', 'cpost1', {
-        tag: 'Update', // identical to the current value
+        tagAccent: 'primary', // identical to the current value
         author: 'Someone Else',
       });
 

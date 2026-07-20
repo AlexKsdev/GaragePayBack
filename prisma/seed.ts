@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient, Role } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
+import { POSTS } from './posts.data';
 import { PRODUCTS, RARITY_RANK } from './products.data';
 
 const TEST_USER = {
@@ -46,7 +47,14 @@ async function main() {
       role: Role.USER,
       ...TEST_PROFILE,
     },
-    select: { id: true, email: true, name: true, role: true, rank: true, xp: true },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      rank: true,
+      xp: true,
+    },
   });
 
   console.log('Seeded test user:', user);
@@ -61,6 +69,29 @@ async function main() {
     });
   }
   console.log(`Seeded ${PRODUCTS.length} shop products`);
+
+  // Re-running the seed resets these six posts to their seeded text, including
+  // anything edited in the admin panel. Posts created there have other slugs
+  // and are left alone.
+  for (const { translations, ...post } of POSTS) {
+    const { id } = await prisma.post.upsert({
+      where: { slug: post.slug },
+      update: { ...post, published: true },
+      create: { ...post, published: true },
+      select: { id: true },
+    });
+
+    for (const { locale, ...text } of translations) {
+      // Body seeds as the excerpt — see posts.data.ts for why.
+      const row = { ...text, body: text.excerpt };
+      await prisma.postTranslation.upsert({
+        where: { postId_locale: { postId: id, locale } },
+        create: { postId: id, locale, ...row },
+        update: row,
+      });
+    }
+  }
+  console.log(`Seeded ${POSTS.length} blog posts (EN + UK)`);
 
   await prisma.$disconnect();
 }

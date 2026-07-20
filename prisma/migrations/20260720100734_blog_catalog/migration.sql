@@ -18,7 +18,6 @@ CREATE TABLE "Post" (
     "id" TEXT NOT NULL,
     "slug" TEXT NOT NULL,
     "image" TEXT NOT NULL,
-    "tag" TEXT NOT NULL,
     "tagAccent" TEXT NOT NULL,
     "author" TEXT NOT NULL,
     "published" BOOLEAN NOT NULL DEFAULT false,
@@ -36,6 +35,7 @@ CREATE TABLE "PostTranslation" (
     "locale" "Locale" NOT NULL,
     "title" TEXT NOT NULL,
     "excerpt" TEXT NOT NULL,
+    "tag" TEXT NOT NULL,
     "body" TEXT NOT NULL,
 
     CONSTRAINT "PostTranslation_pkey" PRIMARY KEY ("id")
