@@ -248,6 +248,65 @@ model Post {
   translations PostTranslation[]
 }
 
+// A wiki section. Ordering, icon and colour are language-independent; the name
+// a reader sees lives on the translation.
+model WikiCategory {
+  id        String   @id @default(cuid())
+  /// Stable id used by the category filter in the URL and the nav.
+  key       String   @unique
+  icon      String // name from the allowed icon list
+  accent    String // name from the allowed accent list
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  translations WikiCategoryTranslation[]
+  articles     WikiArticle[]
+}
+
+model WikiCategoryTranslation {
+  id         String @id @default(cuid())
+  categoryId String
+  locale     Locale
+  title      String
+
+  category WikiCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, locale])
+}
+
+// A wiki article. `slug` is what /wiki/[slug] resolves — the mock had no slug at
+// all, so its articles were list items that led nowhere.
+model WikiArticle {
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  categoryId String
+  published  Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category     WikiCategory           @relation(fields: [categoryId], references: [id])
+  translations WikiArticleTranslation[]
+
+  @@index([categoryId])
+}
+
+model WikiArticleTranslation {
+  id        String @id @default(cuid())
+  articleId String
+  locale    Locale
+  title     String
+  /// The one-line summary shown under the title in the category card.
+  summary   String
+  /// Markdown. Rendered with raw HTML disabled, so it cannot inject markup.
+  body      String
+
+  article WikiArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, locale])
+}
+
 // One row per language per post. Cascade is right here where it is wrong for
 // purchases: a translation means nothing without its post, and nothing else
 // references it.
