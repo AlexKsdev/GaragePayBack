@@ -38,14 +38,26 @@ async function main() {
 
   const passwordHash = await bcrypt.hash(TEST_USER.password, 10);
 
+  // `role` and `twoFactorEnabled` are reset on update, not just on create: the
+  // browser-verification workflow promotes this account to ADMIN and switches
+  // 2FA on, and a seed that leaves it there is not returning the database to a
+  // known state. A 2FA-enabled seed user also cannot log in at all, since the
+  // sandbox mail sender only delivers to the real admin's address.
+  const ACCESS_DEFAULTS = { role: Role.USER, twoFactorEnabled: false };
+
   const user = await prisma.user.upsert({
     where: { email: TEST_USER.email },
-    update: { name: TEST_USER.name, passwordHash, ...TEST_PROFILE },
+    update: {
+      name: TEST_USER.name,
+      passwordHash,
+      ...ACCESS_DEFAULTS,
+      ...TEST_PROFILE,
+    },
     create: {
       email: TEST_USER.email,
       passwordHash,
       name: TEST_USER.name,
-      role: Role.USER,
+      ...ACCESS_DEFAULTS,
       ...TEST_PROFILE,
     },
     select: {
