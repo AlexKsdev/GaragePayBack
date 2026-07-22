@@ -12,6 +12,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PostsModule } from './modules/posts/posts.module';
+import { WikiModule } from './modules/wiki/wiki.module';
 import { QuestsModule } from './modules/quests/quests.module';
 import { ProductsModule } from './modules/products/products.module';
 
@@ -27,6 +28,7 @@ import { ProductsModule } from './modules/products/products.module';
     PaymentsModule,
     QuestsModule,
     PostsModule,
+    WikiModule,
     ProductsModule,
   ],
   controllers: [AppController],

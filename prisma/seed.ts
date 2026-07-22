@@ -4,6 +4,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
 import { POSTS } from './posts.data';
 import { PRODUCTS, RARITY_RANK } from './products.data';
+import { WIKI } from './wiki.data';
 
 const TEST_USER = {
   email: 'test@purecraft.net',
@@ -92,6 +93,58 @@ async function main() {
     }
   }
   console.log(`Seeded ${POSTS.length} blog posts (EN + UK)`);
+
+  // Same contract as the posts above: re-running resets these rows to their
+  // seeded text. Categories and articles authored later have other keys and
+  // slugs and are left alone.
+  let articleCount = 0;
+  for (const [
+    index,
+    { translations, articles, ...category },
+  ] of WIKI.entries()) {
+    const { id } = await prisma.wikiCategory.upsert({
+      where: { key: category.key },
+      update: { ...category, sortOrder: index },
+      create: { ...category, sortOrder: index },
+      select: { id: true },
+    });
+
+    for (const { locale, ...text } of translations) {
+      await prisma.wikiCategoryTranslation.upsert({
+        where: { categoryId_locale: { categoryId: id, locale } },
+        create: { categoryId: id, locale, ...text },
+        update: text,
+      });
+    }
+
+    for (const [order, article] of articles.entries()) {
+      const { id: articleId } = await prisma.wikiArticle.upsert({
+        where: { slug: article.slug },
+        update: { categoryId: id, sortOrder: order, published: true },
+        create: {
+          slug: article.slug,
+          categoryId: id,
+          sortOrder: order,
+          published: true,
+        },
+        select: { id: true },
+      });
+
+      for (const { locale, ...text } of article.translations) {
+        // Body seeds as the summary — see wiki.data.ts for why.
+        const row = { ...text, body: text.summary };
+        await prisma.wikiArticleTranslation.upsert({
+          where: { articleId_locale: { articleId, locale } },
+          create: { articleId, locale, ...row },
+          update: row,
+        });
+      }
+      articleCount += 1;
+    }
+  }
+  console.log(
+    `Seeded ${WIKI.length} wiki categories and ${articleCount} articles (EN + UK)`,
+  );
 
   await prisma.$disconnect();
 }
