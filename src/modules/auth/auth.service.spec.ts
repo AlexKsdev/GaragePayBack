@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import {
   BadRequestException,
   ConflictException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Role, type User } from '@prisma/client';
@@ -12,7 +13,7 @@ import { createHash } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
 import { MailService } from '../mail/mail.service';
-import { AUTH_ERROR_CODES } from '../../config/error-codes.config';
+import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
 import { STEP_UP_PURPOSE } from '../../config/step-up.config';
 
 const mockPrisma = {
@@ -369,6 +370,40 @@ describe('AuthService', () => {
         );
         expect(payload.purpose).toBe('2fa');
         expect(payload.sub).toBe(emailUser.id);
+      });
+
+      it('lets a delivery failure through instead of turning it into a 500', async () => {
+        // MailService already reports an undelivered code as a coded 503; the
+        // bug was this method awaiting it with no handling, so the typed
+        // exception was replaced by "Internal server error" further up.
+        mockMailService.sendTwoFactorCode.mockRejectedValueOnce(
+          new ServiceUnavailableException(
+            authError(
+              AUTH_ERROR_CODES.emailDeliveryFailed,
+              "We couldn't send the email. Please try again in a moment.",
+            ),
+          ),
+        );
+        const svc = serviceWithRealJwt();
+
+        await expect(
+          svc.startTwoFactorLogin(emailUser as User),
+        ).rejects.toMatchObject({
+          response: { code: AUTH_ERROR_CODES.emailDeliveryFailed },
+        });
+      });
+
+      it('issues no pending token when the code was never sent', async () => {
+        mockMailService.sendTwoFactorCode.mockRejectedValueOnce(
+          new ServiceUnavailableException('nope'),
+        );
+        const svc = serviceWithRealJwt();
+
+        // A token would put the client on the "enter your code" step with no
+        // code in existence.
+        await expect(
+          svc.startTwoFactorLogin(emailUser as User),
+        ).rejects.toBeInstanceOf(ServiceUnavailableException);
       });
     });
 

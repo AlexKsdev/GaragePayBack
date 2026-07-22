@@ -18,6 +18,8 @@ export const AUTH_ERROR_CODES = {
   resetTokenInvalid: 'AUTH_RESET_TOKEN_INVALID',
   userNotFound: 'AUTH_USER_NOT_FOUND',
   accountDisabled: 'AUTH_ACCOUNT_DISABLED',
+  /** The mail provider refused or failed the send — nothing was delivered. */
+  emailDeliveryFailed: 'AUTH_EMAIL_DELIVERY_FAILED',
 } as const;
 
 export type AuthErrorCode =
