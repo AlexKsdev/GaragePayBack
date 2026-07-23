@@ -1,8 +1,30 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PaymentsService } from './payments.service';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { PaymentStatus, Role } from '@prisma/client';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
+import { AdminActionType, PaymentStatus, Role } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { PaginationDto } from '../../common/dto/pagination.dto';
+import { GEM_PACKS } from '../../config/gem-packs.config';
+import { STRIPE_CLIENT } from './stripe.provider';
+import { AuditService } from '../audit/audit.service';
+
+const mockTx = {
+  payment: { findUnique: jest.fn(), update: jest.fn() },
+  user: { update: jest.fn() },
+  adminAction: { create: jest.fn() },
+};
+
+/** The row the service wrote to the audit log, or undefined if it wrote none. */
+function auditRow(): Record<string, unknown> | undefined {
+  const calls = mockTx.adminAction.create.mock.calls as [
+    { data: Record<string, unknown> },
+  ][];
+  return calls.length ? calls[0][0].data : undefined;
+}
 
 const mockPrisma = {
   client: {
@@ -11,14 +33,23 @@ const mockPrisma = {
       findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
+      count: jest.fn(),
     },
+    user: { update: jest.fn(), findUnique: jest.fn() },
+    $transaction: jest.fn((cb: (tx: typeof mockTx) => unknown) => cb(mockTx)),
   },
+};
+
+const mockStripe = {
+  checkout: { sessions: { create: jest.fn() } },
+  webhooks: { constructEvent: jest.fn() },
 };
 
 const basePayment = {
   id: 'cpayment1',
   userId: 'cuser1',
   amount: 1000,
+  gems: 0,
   description: null,
   status: PaymentStatus.PENDING,
   stripePaymentId: null,
@@ -33,6 +64,10 @@ describe('PaymentsService', () => {
       providers: [
         PaymentsService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: STRIPE_CLIENT, useValue: mockStripe },
+        // The real thing over a mock: these tests should fail if a status
+        // change stops being recorded.
+        AuditService,
       ],
     }).compile();
 
@@ -52,37 +87,279 @@ describe('PaymentsService', () => {
       expect(call.data.userId).toBe('cuser1');
       expect(result.id).toBe('cpayment1');
     });
-
-    it('creates payment with PENDING status by default', async () => {
-      mockPrisma.client.payment.create.mockResolvedValue({ ...basePayment });
-      const result = await service.create('cuser1', { amount: 500 });
-      expect(result.status).toBe(PaymentStatus.PENDING);
-    });
   });
 
   describe('findOne()', () => {
     it('throws NotFoundException when payment does not exist', async () => {
       mockPrisma.client.payment.findUnique.mockResolvedValue(null);
-      await expect(
-        service.findOne('cuser1', 'cnonexistent', Role.USER),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.findOne('cuser1', 'cnonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('throws ForbiddenException for wrong userId', async () => {
       mockPrisma.client.payment.findUnique.mockResolvedValue({
         ...basePayment,
       });
-      await expect(
-        service.findOne('cother', 'cpayment1', Role.USER),
-      ).rejects.toThrow(ForbiddenException);
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER });
+      await expect(service.findOne('cother', 'cpayment1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+  });
+
+  describe('findAll()', () => {
+    const pagination = { skip: 0, limit: 20 } as PaginationDto;
+
+    it('scopes to the caller when their DB role is not admin', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.USER });
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      await service.findAll('cuser1', pagination);
+      expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: 'cuser1' } }),
+      );
     });
 
-    it('allows admin to view any payment', async () => {
-      mockPrisma.client.payment.findUnique.mockResolvedValue({
-        ...basePayment,
+    // The admin overload is gone: admins get their own history here, and the
+    // whole catalogue only through the dedicated GET /payments/admin route.
+    it('scopes to the caller even when the DB role is admin', async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ role: Role.ADMIN });
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      await service.findAll('cadmin', pagination);
+      expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: 'cadmin' } }),
+      );
+    });
+  });
+
+  describe('findAllForAdmin()', () => {
+    const buyer = { id: 'cuser1', name: 'Ann', email: 'ann@purecraft.net' };
+    const adminRow = { ...basePayment, user: buyer };
+
+    it('returns the paginated envelope with the buyer summary', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([adminRow]);
+      mockPrisma.client.payment.count.mockResolvedValue(1);
+
+      const result = await service.findAllForAdmin({
+        skip: 0,
+        limit: 20,
+        page: 1,
       });
-      const result = await service.findOne('cadmin', 'cpayment1', Role.ADMIN);
-      expect(result.id).toBe('cpayment1');
+
+      expect(result).toEqual({
+        items: [adminRow],
+        total: 1,
+        page: 1,
+        limit: 20,
+      });
+      expect(result.items[0].user).toEqual(buyer);
+    });
+
+    it('selects the buyer relation and nothing else off it', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      mockPrisma.client.payment.count.mockResolvedValue(0);
+
+      await service.findAllForAdmin({ skip: 0, limit: 20, page: 1 });
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const arg = mockPrisma.client.payment.findMany.mock.calls[0][0] as {
+        select: { user: { select: Record<string, boolean> } };
+      };
+      expect(arg.select.user.select).toEqual({
+        id: true,
+        name: true,
+        email: true,
+      });
+    });
+
+    it('drives both the page query and the count with the status filter', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      mockPrisma.client.payment.count.mockResolvedValue(0);
+
+      await service.findAllForAdmin({
+        skip: 0,
+        limit: 20,
+        page: 1,
+        status: PaymentStatus.REFUNDED,
+      });
+
+      const where = { status: PaymentStatus.REFUNDED };
+      expect(mockPrisma.client.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where }),
+      );
+      expect(mockPrisma.client.payment.count).toHaveBeenCalledWith({ where });
+    });
+
+    it('falls back to page 1 / limit 20 when they are absent', async () => {
+      mockPrisma.client.payment.findMany.mockResolvedValue([]);
+      mockPrisma.client.payment.count.mockResolvedValue(0);
+
+      const result = await service.findAllForAdmin({ skip: 0 });
+
+      expect(result).toMatchObject({ page: 1, limit: 20 });
+    });
+  });
+
+  describe('createCheckout()', () => {
+    it('throws NotFoundException for an unknown pack', async () => {
+      await expect(service.createCheckout('cuser1', 'nope')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('creates a PENDING payment and a Stripe session priced from config', async () => {
+      const pack = GEM_PACKS[0];
+      mockPrisma.client.payment.create.mockResolvedValue({ id: 'cpay1' });
+      mockPrisma.client.payment.update.mockResolvedValue({});
+      mockStripe.checkout.sessions.create.mockResolvedValue({
+        id: 'cs_test_123',
+        url: 'https://checkout.stripe.com/c/pay/cs_test_123',
+      });
+
+      const result = await service.createCheckout('cuser1', pack.id);
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const paymentArg = mockPrisma.client.payment.create.mock.calls[0][0] as {
+        data: { userId: string; amount: number; gems: number };
+      };
+      expect(paymentArg.data).toMatchObject({
+        userId: 'cuser1',
+        amount: pack.priceCents,
+        gems: pack.gems,
+      });
+
+      const sessionCreate = mockStripe.checkout.sessions.create;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const sessionArg = sessionCreate.mock.calls[0][0] as {
+        metadata: { paymentId: string };
+        line_items: { price_data: { unit_amount: number } }[];
+      };
+      expect(sessionArg.metadata.paymentId).toBe('cpay1');
+      expect(sessionArg.line_items[0].price_data.unit_amount).toBe(
+        pack.priceCents,
+      );
+      expect(result).toEqual({
+        url: 'https://checkout.stripe.com/c/pay/cs_test_123',
+        paymentId: 'cpay1',
+      });
+    });
+  });
+
+  describe('handleWebhook()', () => {
+    const OLD_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+    beforeAll(() => {
+      process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+    });
+    afterAll(() => {
+      process.env.STRIPE_WEBHOOK_SECRET = OLD_SECRET;
+    });
+
+    it('rejects an invalid signature', async () => {
+      mockStripe.webhooks.constructEvent.mockImplementation(() => {
+        throw new Error('bad sig');
+      });
+      await expect(
+        service.handleWebhook(Buffer.from('{}'), 'sig'),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('ignores event types other than checkout.session.completed', async () => {
+      mockStripe.webhooks.constructEvent.mockReturnValue({
+        type: 'payment_intent.created',
+        data: { object: {} },
+      });
+      await service.handleWebhook(Buffer.from('{}'), 'sig');
+      expect(mockPrisma.client.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('credits gems and marks the payment succeeded on completion', async () => {
+      mockStripe.webhooks.constructEvent.mockReturnValue({
+        type: 'checkout.session.completed',
+        data: { object: { metadata: { paymentId: 'cpay1' } } },
+      });
+      mockTx.payment.findUnique.mockResolvedValue({
+        id: 'cpay1',
+        userId: 'cuser1',
+        gems: 550,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(mockTx.payment.update).toHaveBeenCalledWith({
+        where: { id: 'cpay1' },
+        data: { status: PaymentStatus.SUCCEEDED },
+      });
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const userArg = mockTx.user.update.mock.calls[0][0] as {
+        data: { gems: { increment: number } };
+      };
+      expect(userArg.data.gems.increment).toBe(550);
+    });
+
+    it('does not double-credit an already-succeeded payment', async () => {
+      mockStripe.webhooks.constructEvent.mockReturnValue({
+        type: 'checkout.session.completed',
+        data: { object: { metadata: { paymentId: 'cpay1' } } },
+      });
+      mockTx.payment.findUnique.mockResolvedValue({
+        id: 'cpay1',
+        userId: 'cuser1',
+        gems: 550,
+        status: PaymentStatus.SUCCEEDED,
+      });
+
+      await service.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(mockTx.payment.update).not.toHaveBeenCalled();
+      expect(mockTx.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateStatus() audit log', () => {
+    // Admin-only endpoint that moves money — every call is recorded, with the
+    // before/after so an incident review can tell what actually changed.
+    it('records the status change with the actor and both values', async () => {
+      mockPrisma.client.payment.findUnique.mockResolvedValue({
+        id: 'cpay1',
+        status: PaymentStatus.PENDING,
+      });
+      mockTx.payment.update.mockResolvedValue({ id: 'cpay1' });
+
+      await service.updateStatus(
+        'cpay1',
+        { status: PaymentStatus.REFUNDED },
+        'cadmin',
+        '203.0.113.7',
+      );
+
+      expect(auditRow()).toMatchObject({
+        actorId: 'cadmin',
+        action: AdminActionType.PAYMENT_STATUS_UPDATE,
+        targetType: 'Payment',
+        targetId: 'cpay1',
+        metadata: { from: PaymentStatus.PENDING, to: PaymentStatus.REFUNDED },
+        ip: '203.0.113.7',
+      });
+    });
+
+    // Fail-closed: an unrecorded money movement must not stand.
+    it('rolls the status change back when the audit write fails', async () => {
+      mockPrisma.client.payment.findUnique.mockResolvedValue({
+        id: 'cpay1',
+        status: PaymentStatus.PENDING,
+      });
+      mockTx.payment.update.mockResolvedValue({ id: 'cpay1' });
+      mockTx.adminAction.create.mockRejectedValueOnce(new Error('log down'));
+
+      await expect(
+        service.updateStatus(
+          'cpay1',
+          { status: PaymentStatus.REFUNDED },
+          'cadmin',
+        ),
+      ).rejects.toThrow('log down');
     });
   });
 });

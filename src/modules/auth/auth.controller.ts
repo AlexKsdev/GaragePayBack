@@ -4,17 +4,43 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Req,
+  Res,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import type { User } from '@prisma/client';
+import { randomBytes } from 'crypto';
+import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipCsrf } from '../../common/decorators/skip-csrf.decorator';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { AuthenticatedRequest } from '../../common/types/authenticated-request.type';
+import {
+  ACCESS_TTL_MS,
+  authCookieOptions,
+  COOKIE_NAMES,
+  readableCookieOptions,
+  REFRESH_TTL_MS,
+} from '../../config/cookie.config';
 import { AuthService } from './auth.service';
-import { AuthResponseDto } from './dto/auth-response.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { AuthResponseDto, AuthUserDto } from './dto/auth-response.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { RegisterDto } from './dto/register.dto';
+import {
+  DisableTwoFactorDto,
+  TwoFactorCodeDto,
+  TwoFactorRequiredDto,
+} from './dto/two-factor.dto';
+import {
+  PENDING_2FA_TTL_MS,
+  TWO_FA_ACTION_TTL_MS,
+} from '../../config/two-factor.config';
+import { STEP_UP_TTL_MS } from '../../config/step-up.config';
+import { StepUpDto } from './dto/step-up.dto';
+import { AUTH_ERROR_CODES, authError } from '../../config/error-codes.config';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { LocalGuard } from './guards/local.guard';
 
 @Controller('auth')
@@ -22,33 +48,307 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
+  @SkipCsrf()
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
-  register(@Body() dto: RegisterDto): Promise<AuthResponseDto> {
-    return this.authService.register(dto);
+  async register(
+    @Body() dto: RegisterDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<AuthResponseDto> {
+    const { accessToken, refreshToken, user } =
+      await this.authService.register(dto);
+    this.setAuthCookies(res, { accessToken, refreshToken }, user);
+    return { user };
   }
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
   @UseGuards(LocalGuard)
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
-  login(@CurrentUser() user: User): Promise<AuthResponseDto> {
-    return this.authService.login(user);
+  async login(
+    @CurrentUser() user: User,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<AuthResponseDto | TwoFactorRequiredDto> {
+    // With 2FA on, the password alone earns no session — only a short-lived
+    // pending cookie that /auth/2fa/verify can redeem. No access or refresh
+    // cookie is issued here at all.
+    if (user.twoFactorEnabled) {
+      // Mints the pending cookie and emails the login code.
+      res.cookie(
+        COOKIE_NAMES.pending2fa,
+        await this.authService.startTwoFactorLogin(user),
+        authCookieOptions(PENDING_2FA_TTL_MS),
+      );
+      return { twoFactorRequired: true };
+    }
+
+    const result = await this.authService.login(user);
+    this.setAuthCookies(
+      res,
+      { accessToken: result.accessToken, refreshToken: result.refreshToken },
+      result.user,
+    );
+    return { user: result.user };
   }
 
+  @Post('2fa/verify')
+  @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async verifyTwoFactor(
+    @Body() dto: TwoFactorCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<AuthResponseDto> {
+    const pending = req.cookies?.[COOKIE_NAMES.pending2fa] as
+      | string
+      | undefined;
+    if (!pending)
+      throw new UnauthorizedException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionExpired,
+          'No two-factor session',
+        ),
+      );
+
+    const result = await this.authService.verifyTwoFactorLogin(
+      pending,
+      dto.code,
+    );
+    res.clearCookie(COOKIE_NAMES.pending2fa, { path: '/' });
+    this.setAuthCookies(
+      res,
+      { accessToken: result.accessToken, refreshToken: result.refreshToken },
+      result.user,
+    );
+    return { user: result.user };
+  }
+
+  // Re-sends the email code for the pending login. Tighter throttle than verify
+  // so it can't be turned into an email-spam lever.
+  @Post('2fa/resend')
+  @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  async resendTwoFactor(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ resent: true }> {
+    const pending = req.cookies?.[COOKIE_NAMES.pending2fa] as
+      | string
+      | undefined;
+    if (!pending)
+      throw new UnauthorizedException(
+        authError(
+          AUTH_ERROR_CODES.twoFactorSessionExpired,
+          'No two-factor session',
+        ),
+      );
+
+    res.cookie(
+      COOKIE_NAMES.pending2fa,
+      await this.authService.resendTwoFactorCode(pending),
+      authCookieOptions(PENDING_2FA_TTL_MS),
+    );
+    return { resent: true };
+  }
+
+  // Deliberately not gated on JwtGuard: the access token expires in 15 minutes
+  // while the refresh cookie lives 7 days, so gating here would leave an idle
+  // user unable to log out — and unable to clear the httpOnly cookies from JS —
+  // walking away with a live session. The refresh cookie is the credential, and
+  // the CSRF guard still applies.
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @UseGuards(JwtGuard)
   async logout(
-    @CurrentUser() user: AuthenticatedRequest['user'],
-    @Body() dto: RefreshTokenDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    await this.authService.logout(user.id, dto.refreshToken);
+    const refreshToken = req.cookies?.[COOKIE_NAMES.refresh] as
+      | string
+      | undefined;
+    if (refreshToken) await this.authService.logout(refreshToken);
+    this.clearAuthCookies(res);
   }
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  refresh(@Body() dto: RefreshTokenDto): Promise<{ accessToken: string }> {
-    return this.authService.refresh(dto);
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ ok: true }> {
+    const refreshToken = req.cookies?.[COOKIE_NAMES.refresh] as
+      | string
+      | undefined;
+    if (!refreshToken) throw new UnauthorizedException('No refresh token');
+    const tokens = await this.authService.refresh(refreshToken);
+    res.cookie(
+      COOKIE_NAMES.access,
+      tokens.accessToken,
+      authCookieOptions(ACCESS_TTL_MS),
+    );
+    // The refresh token rotates on every use — the client must be given the
+    // replacement, or its next refresh would replay a revoked token and trip
+    // the reuse detector, logging it out.
+    res.cookie(
+      COOKIE_NAMES.refresh,
+      tokens.refreshToken,
+      authCookieOptions(REFRESH_TTL_MS),
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Re-prove a factor to unlock destructive actions for the next few minutes.
+   * The proof is delivered as its own httpOnly cookie rather than in the body —
+   * nothing client-side needs to read it, and StepUpGuard is its only consumer.
+   */
+  @Post('step-up')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async stepUp(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: StepUpDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const token = await this.authService.stepUp(user.id, dto.password);
+    res.cookie(COOKIE_NAMES.stepUp, token, authCookieOptions(STEP_UP_TTL_MS));
+  }
+
+  // Emails a confirmation code and parks its hash in the action cookie; the
+  // account only gains 2FA once /2fa/enable proves the code arrived.
+  @Post('2fa/setup')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  async setupTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ sent: true }> {
+    res.cookie(
+      COOKIE_NAMES.twoFaAction,
+      await this.authService.setupTwoFactor(user.id),
+      authCookieOptions(TWO_FA_ACTION_TTL_MS),
+    );
+    return { sent: true };
+  }
+
+  @Post('2fa/enable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async enableTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: TwoFactorCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const action = req.cookies?.[COOKIE_NAMES.twoFaAction] as
+      | string
+      | undefined;
+    await this.authService.enableTwoFactor(user.id, dto.code, action);
+    res.clearCookie(COOKIE_NAMES.twoFaAction, { path: '/' });
+  }
+
+  // Emails the code needed to turn 2FA off (paired with the password below).
+  @Post('2fa/disable/request')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  async requestDisableTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ sent: true }> {
+    res.cookie(
+      COOKIE_NAMES.twoFaAction,
+      await this.authService.requestDisableCode(user.id),
+      authCookieOptions(TWO_FA_ACTION_TTL_MS),
+    );
+    return { sent: true };
+  }
+
+  @Post('2fa/disable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async disableTwoFactor(
+    @CurrentUser() user: AuthenticatedRequest['user'],
+    @Body() dto: DisableTwoFactorDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const action = req.cookies?.[COOKIE_NAMES.twoFaAction] as
+      | string
+      | undefined;
+    await this.authService.disableTwoFactor(
+      user.id,
+      dto.password,
+      dto.code,
+      action,
+    );
+    res.clearCookie(COOKIE_NAMES.twoFaAction, { path: '/' });
+  }
+
+  // Always responds the same way whether or not the email exists, so the
+  // response itself can't be used to enumerate registered accounts.
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  async forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+  ): Promise<{ message: string }> {
+    await this.authService.forgotPassword(dto.email);
+    return {
+      message: 'If that email is registered, a reset link has been sent.',
+    };
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @SkipCsrf()
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+  ): Promise<{ message: string }> {
+    await this.authService.resetPassword(dto.token, dto.newPassword);
+    return { message: 'Password has been reset.' };
+  }
+
+  private setAuthCookies(
+    res: Response,
+    tokens: { accessToken: string; refreshToken: string },
+    user: AuthUserDto,
+  ): void {
+    res.cookie(
+      COOKIE_NAMES.access,
+      tokens.accessToken,
+      authCookieOptions(ACCESS_TTL_MS),
+    );
+    res.cookie(
+      COOKIE_NAMES.refresh,
+      tokens.refreshToken,
+      authCookieOptions(REFRESH_TTL_MS),
+    );
+    res.cookie(
+      COOKIE_NAMES.csrf,
+      randomBytes(32).toString('hex'),
+      readableCookieOptions(REFRESH_TTL_MS),
+    );
+    // Display-only: lets the client render the session without a round-trip.
+    // Tamperable by design — never authorize on it.
+    res.cookie(
+      COOKIE_NAMES.user,
+      JSON.stringify(user),
+      readableCookieOptions(REFRESH_TTL_MS),
+    );
+  }
+
+  private clearAuthCookies(res: Response): void {
+    for (const name of Object.values(COOKIE_NAMES)) {
+      res.clearCookie(name, { path: '/' });
+    }
   }
 }

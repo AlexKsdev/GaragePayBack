@@ -18,23 +18,121 @@ enum PaymentStatus {
   REFUNDED
 }
 
-model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  role         Role     @default(USER)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  payments     Payment[]
-  refreshTokens RefreshToken[]
+enum Currency {
+  COINS
+  GEMS
 }
 
-model RefreshToken {
+/// The locales the site is routed for. Editorial content genuinely exists in
+/// both, so it is stored per-locale rather than keyed into the i18n messages.
+enum Locale {
+  EN
+  UK
+}
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique
+  passwordHash String
+  name         String
+  role         Role   @default(USER)
+
+  // Set false to ban: blocks login and refresh, and fails the admin check.
+  // A live access token still works until it expires (<= 15 min).
+  active Boolean @default(true)
+
+  // Email two-factor: a one-time code emailed at login. Mandatory for admins
+  // (AdminGuard rejects an admin without it), optional for everyone else.
+  twoFactorEnabled Boolean @default(false)
+
+  // Player profile / game stats (surfaced on the account dashboard)
+  rank            String  @default("Rookie")
+  avatar          String?
+  xp              Int     @default(0) // total lifetime XP — level & progress are derived from this
+  coins           Int     @default(0)
+  gems            Int     @default(0)
+  playtimeMinutes Int     @default(0)
+  kills           Int     @default(0)
+  deaths          Int     @default(0)
+  blocksPlaced    Int     @default(0)
+  streak          Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments            Payment[]
+  refreshTokens       RefreshToken[]
+  purchases           Purchase[]
+  passwordResetTokens PasswordResetToken[]
+  questClaims         QuestClaim[]
+}
+
+// One row per reward taken: its presence is what marks a quest claimed for the
+// day, and the unique key makes a double claim impossible even under a race.
+model QuestClaim {
   id        String   @id @default(cuid())
-  token     String   @unique
   userId    String
+  questKey  String
+  day       String // 'YYYY-MM-DD' in the quest timezone
+  claimedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questKey, day])
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  category   String
+  name       String
+  emoji      String
+  rarity     String
+  rarityRank Int      @default(0) // Common=1 … Legendary=5, for rarity sorting
+  currency   Currency @default(COINS)
+  price      Int
+  badge      String?
+  stats      String[]
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  purchases Purchase[]
+}
+
+model Purchase {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  currency  Currency
+  price     Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+}
+
+// Refresh tokens are stored hashed (sha256), never in plaintext — a database
+// leak must not hand over live sessions. Tokens rotate on every use: the old row
+// is stamped `revokedAt` and a new one issued. Presenting an already-revoked
+// token means it was replayed (i.e. stolen), which revokes the user's whole set.
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
 
@@ -44,7 +142,8 @@ model RefreshToken {
 model Payment {
   id              String        @id @default(cuid())
   userId          String
-  amount          Int
+  amount          Int // charged amount in the smallest currency unit (cents)
+  gems            Int           @default(0) // gems credited to the user when this payment succeeds
   description     String?
   status          PaymentStatus @default(PENDING)
   stripePaymentId String?
@@ -54,3 +153,184 @@ model Payment {
   user User @relation(fields: [userId], references: [id])
 }
 
+/// Forensic record of an admin acting on someone else's data. Append-only:
+/// nothing in the app updates or deletes a row here.
+model AdminAction {
+  id String @id @default(cuid())
+
+  /// Deliberately NOT a relation to User: the log has to outlive the accounts
+  /// it describes. A foreign key would either cascade the evidence away with
+  /// the actor or block their deletion outright.
+  actorId    String
+  action     AdminActionType
+  targetType String
+  targetId   String
+
+  /// What changed — e.g. the old and new value. Never secrets or password hashes.
+  metadata Json?
+
+  /// The address the request arrived from — today that is the frontend's /api
+  /// proxy, not the operator: Next's rewrite does not add x-forwarded-for, and
+  /// trusting the header would be worse than useless, since it passes a
+  /// client-supplied one straight through (verified 2026-07-16). Treat this as
+  /// the calling hop until a trusted proxy sets a forwarded header and Express
+  /// is configured with the matching `trust proxy` hop count.
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+}
+
+enum AdminActionType {
+  USER_UPDATE
+  USER_DELETE
+  USER_ROLE_CHANGE
+  USER_BALANCE_CHANGE
+  PAYMENT_STATUS_UPDATE
+  PRODUCT_CREATE
+  PRODUCT_UPDATE
+  // Not a deletion: `Purchase.product` has no cascade, and purchase history must
+  // keep pointing at what was actually bought. `active: false` is what removal
+  // from the shop means — and it is reversible.
+  PRODUCT_DEACTIVATE
+  QUEST_CREATE
+  QUEST_UPDATE
+  // Same reasoning as products: claims reference a quest by key and must keep
+  // meaning something, so removal from the daily set is `active: false`.
+  QUEST_DEACTIVATE
+  POST_CREATE
+  POST_UPDATE
+  // Taking a post off the blog is `published: false`, so a mistaken unpublish
+  // costs a click rather than the article.
+  POST_UNPUBLISH
+  WIKI_CATEGORY_CREATE
+  WIKI_CATEGORY_UPDATE
+  WIKI_ARTICLE_CREATE
+  WIKI_ARTICLE_UPDATE
+  // Same as posts: an article leaves the wiki by flag, not by deletion. There
+  // is no category equivalent — articles reference their category by RESTRICT,
+  // so a category with anything in it cannot be removed at all.
+  WIKI_ARTICLE_UNPUBLISH
+}
+
+enum QuestRewardType {
+  COINS
+  GEMS
+}
+
+// The daily quest catalogue. Admin-managed, so it lives here rather than in
+// code. `key` is the stable id the client localizes built-in quests by and
+// QuestClaim rows point at.
+model Quest {
+  id           String          @id @default(cuid())
+  key          String          @unique
+  title        String
+  target       Int
+  rewardType   QuestRewardType @default(COINS)
+  rewardAmount Int
+  icon         String // name from the allowed icon list
+  color        String
+  active       Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+// A blog post. Everything here is language-independent; anything a translator
+// would touch lives on PostTranslation, so a third locale is rows rather than
+// a migration.
+model Post {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  image       String
+  /// The chip's colour, not its wording — the label itself is translated.
+  tagAccent   String // name from the allowed accent list
+  author      String
+  published   Boolean   @default(false)
+  /// Set when the post is first published; the blog orders by it.
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  translations PostTranslation[]
+}
+
+// A wiki section. Ordering, icon and colour are language-independent; the name
+// a reader sees lives on the translation.
+model WikiCategory {
+  id        String   @id @default(cuid())
+  /// Stable id used by the category filter in the URL and the nav.
+  key       String   @unique
+  icon      String // name from the allowed icon list
+  accent    String // name from the allowed accent list
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  translations WikiCategoryTranslation[]
+  articles     WikiArticle[]
+}
+
+model WikiCategoryTranslation {
+  id         String @id @default(cuid())
+  categoryId String
+  locale     Locale
+  title      String
+
+  category WikiCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, locale])
+}
+
+// A wiki article. `slug` is what /wiki/[slug] resolves — the mock had no slug at
+// all, so its articles were list items that led nowhere.
+model WikiArticle {
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  categoryId String
+  published  Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category     WikiCategory           @relation(fields: [categoryId], references: [id])
+  translations WikiArticleTranslation[]
+
+  @@index([categoryId])
+}
+
+model WikiArticleTranslation {
+  id        String @id @default(cuid())
+  articleId String
+  locale    Locale
+  title     String
+  /// The one-line summary shown under the title in the category card.
+  summary   String
+  /// Markdown. Rendered with raw HTML disabled, so it cannot inject markup.
+  body      String
+
+  article WikiArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, locale])
+}
+
+// One row per language per post. Cascade is right here where it is wrong for
+// purchases: a translation means nothing without its post, and nothing else
+// references it.
+model PostTranslation {
+  id      String @id @default(cuid())
+  postId  String
+  locale  Locale
+  title   String
+  excerpt String
+  /// The tag chip's wording ("Update" / "Оновлення") — display text, so it is
+  /// translated like everything else a reader sees.
+  tag     String
+  /// Markdown. Rendered with raw HTML disabled, so it cannot inject markup.
+  body    String
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, locale])
+}
