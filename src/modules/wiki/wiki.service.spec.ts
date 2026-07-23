@@ -1,19 +1,50 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException } from '@nestjs/common';
-import { Locale } from '@prisma/client';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { AdminActionType, Locale } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { WikiService } from './wiki.service';
 
 const mockPrisma = {
   client: {
     wikiCategory: {
       findMany: jest.fn(),
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+    },
+    wikiCategoryTranslation: {
+      upsert: jest.fn(),
     },
     wikiArticle: {
       findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
     },
+    wikiArticleTranslation: {
+      upsert: jest.fn(),
+    },
+    adminAction: {
+      create: jest.fn(),
+    },
+    $transaction: jest.fn(),
   },
 };
+
+// Hands the callback the client itself, so `tx.wikiArticle.update` is the same
+// mock the assertions below already watch.
+mockPrisma.client.$transaction.mockImplementation((cb: unknown) =>
+  (cb as (tx: unknown) => unknown)(mockPrisma.client),
+);
+
+/** The row the service wrote to the audit log, or undefined if it wrote none. */
+function auditRow(): Record<string, unknown> | undefined {
+  const calls = mockPrisma.client.adminAction.create.mock.calls as [
+    { data: Record<string, unknown> },
+  ][];
+  return calls.length ? calls[0][0].data : undefined;
+}
 
 const EN_CAT = { locale: Locale.EN, title: 'Getting Started' };
 const UK_CAT = { locale: Locale.UK, title: 'Перші кроки' };
@@ -56,6 +87,9 @@ describe('WikiService', () => {
       providers: [
         WikiService,
         { provide: PrismaService, useValue: mockPrisma },
+        // The real thing over a mock: these tests should fail if an admin
+        // mutation stops being recorded.
+        AuditService,
       ],
     }).compile();
 
@@ -246,6 +280,218 @@ describe('WikiService', () => {
       await expect(service.findOne('server-rules', Locale.EN)).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('findAllForAdmin()', () => {
+    it('includes unpublished articles and every translation', async () => {
+      mockPrisma.client.wikiCategory.findMany.mockResolvedValue([category()]);
+
+      await service.findAllForAdmin();
+
+      const call = mockPrisma.client.wikiCategory.findMany.mock.calls[0] as [
+        { include: { articles: Record<string, unknown> } },
+      ];
+      // A draft has to be findable to be finished, so unlike the public read
+      // there is no `where` on the articles at all.
+      expect(call[0].include.articles.where).toBeUndefined();
+    });
+
+    it('keeps an empty category, unlike the public listing', async () => {
+      // The public read drops it as noise; an admin needs it to add the first
+      // article to it.
+      mockPrisma.client.wikiCategory.findMany.mockResolvedValue([
+        category({ articles: [] }),
+      ]);
+
+      expect(await service.findAllForAdmin()).toHaveLength(1);
+    });
+  });
+
+  describe('createCategory()', () => {
+    const dto = {
+      key: 'redstone',
+      icon: 'Zap',
+      accent: 'yellow',
+      translations: [{ locale: Locale.EN, title: 'Redstone' }],
+    };
+
+    beforeEach(() => {
+      mockPrisma.client.wikiCategory.findUnique.mockResolvedValue(null);
+      mockPrisma.client.wikiCategory.create.mockResolvedValue({
+        id: 'ccat1',
+        ...dto,
+      });
+    });
+
+    it('rejects a duplicate key with 409 rather than a raw constraint error', async () => {
+      mockPrisma.client.wikiCategory.findUnique.mockResolvedValue({
+        id: 'cother',
+      });
+
+      await expect(service.createCategory('cadmin', dto)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(mockPrisma.client.wikiCategory.create).not.toHaveBeenCalled();
+    });
+
+    it('records the creation in the audit log', async () => {
+      await service.createCategory('cadmin', dto, '10.0.0.1');
+
+      expect(auditRow()?.action).toBe(AdminActionType.WIKI_CATEGORY_CREATE);
+      expect(auditRow()?.targetType).toBe('WikiCategory');
+    });
+
+    it('writes the row and its translations in one transaction', async () => {
+      await service.createCategory('cadmin', dto);
+
+      expect(mockPrisma.client.$transaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('createArticle()', () => {
+    const dto = {
+      slug: 'redstone-basics',
+      categoryId: 'ccat1',
+      translations: [
+        {
+          locale: Locale.EN,
+          title: 'Redstone Basics',
+          summary: 'Start here.',
+          body: 'Wires.',
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      mockPrisma.client.wikiArticle.findUnique.mockResolvedValue(null);
+      mockPrisma.client.wikiCategory.findUnique.mockResolvedValue({
+        id: 'ccat1',
+      });
+      mockPrisma.client.wikiArticle.create.mockResolvedValue({
+        id: 'cart1',
+        ...dto,
+        published: false,
+      });
+    });
+
+    it('refuses an article whose category does not exist', async () => {
+      // The FK would reject it anyway; a 404 says which half was wrong.
+      mockPrisma.client.wikiCategory.findUnique.mockResolvedValue(null);
+
+      await expect(service.createArticle('cadmin', dto)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(mockPrisma.client.wikiArticle.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a duplicate slug', async () => {
+      mockPrisma.client.wikiArticle.findUnique.mockResolvedValue({
+        id: 'cother',
+      });
+
+      await expect(service.createArticle('cadmin', dto)).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('creates the article unpublished', async () => {
+      await service.createArticle('cadmin', dto);
+
+      const call = mockPrisma.client.wikiArticle.create.mock.calls[0] as [
+        { data: { published: boolean } },
+      ];
+      expect(call[0].data.published).toBe(false);
+    });
+  });
+
+  describe('updateArticle()', () => {
+    const current = {
+      id: 'cart1',
+      slug: 'server-rules',
+      categoryId: 'ccat1',
+      published: true,
+      sortOrder: 0,
+      translations: [EN_ART, UK_ART],
+    };
+
+    beforeEach(() => {
+      mockPrisma.client.wikiArticle.findUnique.mockResolvedValue(current);
+      mockPrisma.client.wikiArticle.update.mockResolvedValue(current);
+      mockPrisma.client.wikiCategory.findUnique.mockResolvedValue({
+        id: 'ccat2',
+      });
+    });
+
+    it('upserts only the translations that were sent', async () => {
+      await service.updateArticle('cadmin', 'cart1', {
+        translations: [{ ...UK_ART, title: 'Новий заголовок' }],
+      });
+
+      // Editing one language must not wipe the other.
+      expect(
+        mockPrisma.client.wikiArticleTranslation.upsert,
+      ).toHaveBeenCalledTimes(1);
+      const call = mockPrisma.client.wikiArticleTranslation.upsert.mock
+        .calls[0] as [{ where: { articleId_locale: { locale: Locale } } }];
+      expect(call[0].where.articleId_locale.locale).toBe(Locale.UK);
+    });
+
+    it('logs which fields actually changed, not the whole submitted form', async () => {
+      await service.updateArticle('cadmin', 'cart1', {
+        slug: 'server-rules', // identical to the current value
+        sortOrder: 3,
+      });
+
+      expect(auditRow()?.action).toBe(AdminActionType.WIKI_ARTICLE_UPDATE);
+      expect((auditRow()?.metadata as { changed: string[] }).changed).toEqual([
+        'sortOrder',
+      ]);
+    });
+
+    it('refuses a move into a category that does not exist', async () => {
+      mockPrisma.client.wikiCategory.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.updateArticle('cadmin', 'cart1', { categoryId: 'cmissing' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('setArticlePublished()', () => {
+    beforeEach(() => {
+      mockPrisma.client.wikiArticle.findUnique.mockResolvedValue({
+        id: 'cart1',
+        slug: 'server-rules',
+        published: false,
+      });
+      mockPrisma.client.wikiArticle.update.mockResolvedValue({
+        id: 'cart1',
+        published: true,
+      });
+    });
+
+    it('records an unpublish under its own action type', async () => {
+      await service.setArticlePublished('cadmin', 'cart1', false);
+
+      expect(auditRow()?.action).toBe(AdminActionType.WIKI_ARTICLE_UNPUBLISH);
+    });
+
+    it('records a publish as an update, since there is no PUBLISH action', async () => {
+      await service.setArticlePublished('cadmin', 'cart1', true);
+
+      expect(auditRow()?.action).toBe(AdminActionType.WIKI_ARTICLE_UPDATE);
+      expect(auditRow()?.metadata).toEqual(
+        expect.objectContaining({ published: { from: false, to: true } }),
+      );
+    });
+
+    it('throws NotFoundException for an unknown id', async () => {
+      mockPrisma.client.wikiArticle.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.setArticlePublished('cadmin', 'cmissing', true),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

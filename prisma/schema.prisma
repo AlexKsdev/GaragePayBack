@@ -204,6 +204,14 @@ enum AdminActionType {
   // Taking a post off the blog is `published: false`, so a mistaken unpublish
   // costs a click rather than the article.
   POST_UNPUBLISH
+  WIKI_CATEGORY_CREATE
+  WIKI_CATEGORY_UPDATE
+  WIKI_ARTICLE_CREATE
+  WIKI_ARTICLE_UPDATE
+  // Same as posts: an article leaves the wiki by flag, not by deletion. There
+  // is no category equivalent — articles reference their category by RESTRICT,
+  // so a category with anything in it cannot be removed at all.
+  WIKI_ARTICLE_UNPUBLISH
 }
 
 enum QuestRewardType {
